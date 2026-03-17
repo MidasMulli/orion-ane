@@ -70,6 +70,11 @@ lib.forward_model_set_layer_kernels.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
 ]
 
+lib.forward_model_set_layer_kernels_fused.argtypes = [
+    ctypes.c_void_p, ctypes.c_int,
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+]
+
 lib.forward_model_add_cls_kernel.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
 
 lib.forward_model_reset_cache.argtypes = [ctypes.c_void_p]
@@ -82,14 +87,14 @@ lib.forward_model_get_timing.argtypes = [ctypes.c_void_p, ctypes.POINTER(Forward
 
 def main():
     print("╔══════════════════════════════════════════════════════════════╗")
-    print("║  C FORWARD PASS TEST                                        ║")
+    print("║  C FORWARD PASS TEST (FUSED KERNELS)                        ║")
     print("║  Python setup → C hot loop → compare with Python reference  ║")
     print("╚══════════════════════════════════════════════════════════════╝")
 
     # ── Step 1: Load model via Python (reuse existing infrastructure) ──
     print("\n▸ Loading model via Python...")
     py_model = RealDraftModel()
-    py_model.load_and_compile(lambda msg: print(f"  {msg}"))
+    py_model.load_and_compile(lambda msg: print(f"  {msg}"), fused=True)
 
     if not py_model.compiled:
         print("✗ Model compilation failed!")
@@ -148,15 +153,22 @@ def main():
             qn.ctypes.data_as(ctypes.c_void_p),
             kn.ctypes.data_as(ctypes.c_void_p))
 
-        lib.forward_model_set_layer_kernels(c_model, l,
-            lk['q'], lk['k'], lk['v'], lk['o'],
-            lk['gate'], lk['up'], lk['down'])
+        if py_model.fused:
+            lib.forward_model_set_layer_kernels_fused(c_model, l,
+                lk['qkv'], lk['o'], lk['gate_up'], lk['down'])
+        else:
+            lib.forward_model_set_layer_kernels(c_model, l,
+                lk['q'], lk['k'], lk['v'], lk['o'],
+                lk['gate'], lk['up'], lk['down'])
 
     # Classifier chunks
     for kernel, out_ch in py_model.cls_kernels:
         lib.forward_model_add_cls_kernel(c_model, kernel, out_ch)
 
-    print(f"  ✓ Transferred {py_model.n_layers} layers + {len(py_model.cls_kernels)} classifier chunks")
+    kernels_per_layer = 4 if py_model.fused else 7
+    total_dispatches = py_model.n_layers * kernels_per_layer + len(py_model.cls_kernels)
+    print(f"  ✓ Transferred {py_model.n_layers} layers ({kernels_per_layer} kernels/layer, {'fused' if py_model.fused else 'unfused'}) + {len(py_model.cls_kernels)} classifier chunks")
+    print(f"  ✓ Total ANE dispatches per token: {total_dispatches}")
 
     # ── Step 4: Test prompt ──
     prompt = "The capital of France is"

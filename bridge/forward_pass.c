@@ -22,6 +22,7 @@ typedef struct {
 } LayerWeights;
 
 typedef struct {
+    // Unfused mode (7 kernels)
     ANEKernelHandle *q;
     ANEKernelHandle *k;
     ANEKernelHandle *v;
@@ -29,6 +30,10 @@ typedef struct {
     ANEKernelHandle *gate;
     ANEKernelHandle *up;
     ANEKernelHandle *down;
+    // Fused mode (4 kernels) — qkv replaces q/k/v, gate_up replaces gate/up
+    ANEKernelHandle *qkv;      // output: [q_dim + kv_dim + kv_dim]
+    ANEKernelHandle *gate_up;  // output: [hidden_dim * 2]
+    bool fused;
 } LayerKernels;
 
 typedef struct {
@@ -238,6 +243,45 @@ static void ane_linear(ForwardModel *m, ANEKernelHandle *kernel,
     m->timing.ane_read_ms += now_ms(m) - t;
 }
 
+// Run a fused ANE kernel and split the output into multiple buffers.
+// out_bufs: array of output buffer pointers
+// out_dims: array of output dimensions per buffer
+// n_outs: number of output splits
+static void ane_linear_fused(ForwardModel *m, ANEKernelHandle *kernel,
+                              const float *x, int in_d, int total_out_d,
+                              float **out_bufs, const int *out_dims, int n_outs) {
+    int spatial = m->cfg.ane_spatial;
+    double t;
+
+    // Pack input
+    t = now_ms(m);
+    float *io_in = (float *)ane_bridge_get_input_base(kernel, 0);
+    memset(io_in, 0, in_d * spatial * sizeof(float));
+    for (int i = 0; i < in_d; i++) {
+        io_in[i * spatial] = x[i];
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+    m->timing.ane_pack_ms += now_ms(m) - t;
+
+    // Dispatch
+    t = now_ms(m);
+    ane_bridge_eval(kernel);
+    __asm__ volatile("dsb sy" ::: "memory");
+    m->timing.ane_eval_ms += now_ms(m) - t;
+
+    // Extract and split output
+    t = now_ms(m);
+    const float *io_out = (const float *)ane_bridge_get_output_base(kernel, 0);
+    int offset = 0;
+    for (int b = 0; b < n_outs; b++) {
+        for (int i = 0; i < out_dims[b]; i++) {
+            out_bufs[b][i] = io_out[(offset + i) * spatial];
+        }
+        offset += out_dims[b];
+    }
+    m->timing.ane_read_ms += now_ms(m) - t;
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 ForwardModel *forward_model_create(const FPModelConfig *config) {
@@ -379,6 +423,19 @@ void forward_model_set_layer_kernels(ForwardModel *m, int layer,
     m->lk[layer].gate = gate;
     m->lk[layer].up   = up;
     m->lk[layer].down = down;
+    m->lk[layer].fused = false;
+}
+
+void forward_model_set_layer_kernels_fused(ForwardModel *m, int layer,
+    ANEKernelHandle *qkv, ANEKernelHandle *o,
+    ANEKernelHandle *gate_up, ANEKernelHandle *down)
+{
+    if (layer < 0 || layer >= m->cfg.n_layers) return;
+    m->lk[layer].qkv     = qkv;
+    m->lk[layer].o       = o;
+    m->lk[layer].gate_up = gate_up;
+    m->lk[layer].down    = down;
+    m->lk[layer].fused   = true;
 }
 
 void forward_model_add_cls_kernel(ForwardModel *m, ANEKernelHandle *kernel, int out_channels) {
@@ -430,9 +487,17 @@ const float *forward_model_forward_token(ForwardModel *m, int token_id, int pos)
 
         // QKV projections (ANE)
         t = now_ms(m);
-        ane_linear(m, lk->q, m->xn, m->q_buf, dim, q_dim);
-        ane_linear(m, lk->k, m->xn, m->k_buf, dim, kv_dim);
-        ane_linear(m, lk->v, m->xn, m->v_buf, dim, kv_dim);
+        if (lk->fused) {
+            // Fused QKV: single dispatch, split output into q/k/v
+            float *qkv_outs[3] = { m->q_buf, m->k_buf, m->v_buf };
+            int qkv_dims[3] = { q_dim, kv_dim, kv_dim };
+            ane_linear_fused(m, lk->qkv, m->xn, dim, q_dim + kv_dim + kv_dim,
+                             qkv_outs, qkv_dims, 3);
+        } else {
+            ane_linear(m, lk->q, m->xn, m->q_buf, dim, q_dim);
+            ane_linear(m, lk->k, m->xn, m->k_buf, dim, kv_dim);
+            ane_linear(m, lk->v, m->xn, m->v_buf, dim, kv_dim);
+        }
         m->timing.ane_ms += now_ms(m) - t;
 
         // QK-norm
@@ -473,8 +538,16 @@ const float *forward_model_forward_token(ForwardModel *m, int token_id, int pos)
 
         // Gate + Up projections (ANE)
         t = now_ms(m);
-        ane_linear(m, lk->gate, m->xn, m->gate_buf, dim, hd);
-        ane_linear(m, lk->up,   m->xn, m->up_buf,   dim, hd);
+        if (lk->fused) {
+            // Fused Gate+Up: single dispatch, split into gate/up
+            float *gu_outs[2] = { m->gate_buf, m->up_buf };
+            int gu_dims[2] = { hd, hd };
+            ane_linear_fused(m, lk->gate_up, m->xn, dim, hd * 2,
+                             gu_outs, gu_dims, 2);
+        } else {
+            ane_linear(m, lk->gate, m->xn, m->gate_buf, dim, hd);
+            ane_linear(m, lk->up,   m->xn, m->up_buf,   dim, hd);
+        }
         m->timing.ane_ms += now_ms(m) - t;
 
         // SiLU gate * up

@@ -55,8 +55,10 @@ class RealDraftModel:
         self.n_kernels = 0
         self._rope_freqs = None  # Precomputed RoPE frequencies
 
-    def load_and_compile(self, status_fn=None):
-        """Download model, extract weights, compile all ANE kernels."""
+    def load_and_compile(self, status_fn=None, fused=False):
+        """Download model, extract weights, compile all ANE kernels.
+        If fused=True, compile fused QKV and Gate+Up kernels (fewer dispatches)."""
+        self.fused = fused
         def status(msg):
             if status_fn:
                 status_fn(msg)
@@ -126,7 +128,9 @@ class RealDraftModel:
             return False
 
         # ── Step 5: Compile kernels ──
-        status(f"Compiling {self.n_layers * 7 + (self.vocab_size // CLS_CHUNK + 1)} ANE kernels...")
+        kpl = 4 if fused else 7
+        n_cls = (self.vocab_size + CLS_CHUNK - 1) // CLS_CHUNK
+        status(f"Compiling {self.n_layers * kpl + n_cls} ANE kernels ({'fused' if fused else 'unfused'})...")
         t_compile = time.time()
 
         q_dim = self.n_heads * self.head_dim
@@ -136,23 +140,63 @@ class RealDraftModel:
             lw = self.layer_weights[l]
             layer_kernels = {}
 
-            for name, w, in_d, out_d in [
-                ('q', lw['q'], self.dim, q_dim),
-                ('k', lw['k'], self.dim, kv_dim),
-                ('v', lw['v'], self.dim, kv_dim),
-                ('o', lw['o'], q_dim, self.dim),
-                ('gate', lw['gate'], self.dim, self.hidden_dim),
-                ('up', lw['up'], self.dim, self.hidden_dim),
-                ('down', lw['down'], self.hidden_dim, self.dim),
-            ]:
+            if fused:
+                # Fused QKV: concatenate Q, K, V weights → single kernel
+                qkv_dim = q_dim + kv_dim + kv_dim
+                w_qkv = np.concatenate([lw['q'], lw['k'], lw['v']], axis=0)
                 mil, wb = generate_conv_mil_with_weights(
-                    in_d, out_d, ANE_SPATIAL, w, f"real_l{l}_{name}")
+                    self.dim, qkv_dim, ANE_SPATIAL, w_qkv, f"real_l{l}_qkv")
                 k = compile_ane_kernel(
-                    mil, wb, [in_d * ANE_SPATIAL * 4], [out_d * ANE_SPATIAL * 4])
+                    mil, wb, [self.dim * ANE_SPATIAL * 4], [qkv_dim * ANE_SPATIAL * 4])
                 if not k:
-                    status(f"Kernel l{l}_{name} FAILED")
+                    status(f"Kernel l{l}_qkv FAILED")
                     return False
-                layer_kernels[name] = k
+                layer_kernels['qkv'] = k
+
+                # Fused Gate+Up: concatenate gate, up weights → single kernel
+                gate_up_dim = self.hidden_dim * 2
+                w_gate_up = np.concatenate([lw['gate'], lw['up']], axis=0)
+                mil, wb = generate_conv_mil_with_weights(
+                    self.dim, gate_up_dim, ANE_SPATIAL, w_gate_up, f"real_l{l}_gate_up")
+                k = compile_ane_kernel(
+                    mil, wb, [self.dim * ANE_SPATIAL * 4], [gate_up_dim * ANE_SPATIAL * 4])
+                if not k:
+                    status(f"Kernel l{l}_gate_up FAILED")
+                    return False
+                layer_kernels['gate_up'] = k
+
+                # O and Down are not fused (different input dims)
+                for name, w, in_d, out_d in [
+                    ('o', lw['o'], q_dim, self.dim),
+                    ('down', lw['down'], self.hidden_dim, self.dim),
+                ]:
+                    mil, wb = generate_conv_mil_with_weights(
+                        in_d, out_d, ANE_SPATIAL, w, f"real_l{l}_{name}")
+                    k = compile_ane_kernel(
+                        mil, wb, [in_d * ANE_SPATIAL * 4], [out_d * ANE_SPATIAL * 4])
+                    if not k:
+                        status(f"Kernel l{l}_{name} FAILED")
+                        return False
+                    layer_kernels[name] = k
+            else:
+                # Separate kernels (original mode)
+                for name, w, in_d, out_d in [
+                    ('q', lw['q'], self.dim, q_dim),
+                    ('k', lw['k'], self.dim, kv_dim),
+                    ('v', lw['v'], self.dim, kv_dim),
+                    ('o', lw['o'], q_dim, self.dim),
+                    ('gate', lw['gate'], self.dim, self.hidden_dim),
+                    ('up', lw['up'], self.dim, self.hidden_dim),
+                    ('down', lw['down'], self.hidden_dim, self.dim),
+                ]:
+                    mil, wb = generate_conv_mil_with_weights(
+                        in_d, out_d, ANE_SPATIAL, w, f"real_l{l}_{name}")
+                    k = compile_ane_kernel(
+                        mil, wb, [in_d * ANE_SPATIAL * 4], [out_d * ANE_SPATIAL * 4])
+                    if not k:
+                        status(f"Kernel l{l}_{name} FAILED")
+                        return False
+                    layer_kernels[name] = k
 
             self.kernels[l] = layer_kernels
             if l % 7 == 0 or l == self.n_layers - 1:
@@ -271,9 +315,15 @@ class RealDraftModel:
 
             # Attention
             xn = self._rmsnorm(x, lw['attn_norm'])
-            q = self._ane_linear(lk['q'], xn, self.dim, q_dim)
-            k = self._ane_linear(lk['k'], xn, self.dim, kv_dim)
-            v = self._ane_linear(lk['v'], xn, self.dim, kv_dim)
+            if self.fused:
+                qkv = self._ane_linear(lk['qkv'], xn, self.dim, q_dim + kv_dim + kv_dim)
+                q = qkv[:q_dim].copy()
+                k = qkv[q_dim:q_dim + kv_dim].copy()
+                v = qkv[q_dim + kv_dim:].copy()
+            else:
+                q = self._ane_linear(lk['q'], xn, self.dim, q_dim)
+                k = self._ane_linear(lk['k'], xn, self.dim, kv_dim)
+                v = self._ane_linear(lk['v'], xn, self.dim, kv_dim)
 
             # QK-norm (Qwen3 specific) — vectorized across all heads
             q_r = q.reshape(self.n_heads, self.head_dim)
@@ -295,8 +345,13 @@ class RealDraftModel:
 
             # FFN (SwiGLU)
             xn = self._rmsnorm(x, lw['ffn_norm'])
-            gate = self._ane_linear(lk['gate'], xn, self.dim, self.hidden_dim)
-            up = self._ane_linear(lk['up'], xn, self.dim, self.hidden_dim)
+            if self.fused:
+                gate_up = self._ane_linear(lk['gate_up'], xn, self.dim, self.hidden_dim * 2)
+                gate = gate_up[:self.hidden_dim].copy()
+                up = gate_up[self.hidden_dim:].copy()
+            else:
+                gate = self._ane_linear(lk['gate'], xn, self.dim, self.hidden_dim)
+                up = self._ane_linear(lk['up'], xn, self.dim, self.hidden_dim)
             silu_gate = gate / (1.0 + np.exp(-np.clip(gate, -20, 20)))
             down = self._ane_linear(lk['down'], silu_gate * up, self.hidden_dim, self.dim)
             x = x + down

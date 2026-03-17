@@ -55,10 +55,17 @@ void forward_model_set_layer_weights(ForwardModel *m, int layer,
     const float *q_norm, const float *k_norm);
 
 // Set per-layer ANE kernel handles (pointers, not copied — Python retains ownership)
+// Unfused mode: 7 separate kernels per layer
 void forward_model_set_layer_kernels(ForwardModel *m, int layer,
     ANEKernelHandle *q, ANEKernelHandle *k, ANEKernelHandle *v,
     ANEKernelHandle *o, ANEKernelHandle *gate, ANEKernelHandle *up,
     ANEKernelHandle *down);
+
+// Fused mode: 4 kernels per layer (qkv, o, gate_up, down)
+// qkv output = [q_dim + kv_dim + kv_dim], gate_up output = [hidden_dim * 2]
+void forward_model_set_layer_kernels_fused(ForwardModel *m, int layer,
+    ANEKernelHandle *qkv, ANEKernelHandle *o,
+    ANEKernelHandle *gate_up, ANEKernelHandle *down);
 
 // Add a classifier chunk kernel. Call in order (chunk 0, 1, 2, ...).
 void forward_model_add_cls_kernel(ForwardModel *m, ANEKernelHandle *kernel, int out_channels);
