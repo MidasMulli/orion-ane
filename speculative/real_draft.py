@@ -24,7 +24,7 @@ from ane_draft import init_ane, lib, compile_ane_kernel, generate_conv_mil_with_
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 ROPE_THETA = 1000000.0
 ANE_SPATIAL = 16   # ANE minimum spatial dimension
-CLS_CHUNK = 8000   # Classifier tiling chunk size
+CLS_CHUNK = 16000  # Classifier tiling chunk size (was 8000 → fewer ANE dispatches)
 MAX_SEQ = 64       # Maximum sequence length for KV cache
 
 
@@ -53,6 +53,7 @@ class RealDraftModel:
         self.compiled = False
         self.compile_time_ms = 0
         self.n_kernels = 0
+        self._rope_freqs = None  # Precomputed RoPE frequencies
 
     def load_and_compile(self, status_fn=None):
         """Download model, extract weights, compile all ANE kernels."""
@@ -175,6 +176,11 @@ class RealDraftModel:
 
         self.compile_time_ms = (time.time() - t_compile) * 1000
         self.n_kernels = sum(len(v) for v in self.kernels.values()) + len(self.cls_kernels)
+
+        # Precompute RoPE frequency table
+        i_vals = np.arange(0, self.head_dim, 2, dtype=np.float32)
+        self._rope_freqs = (1.0 / (ROPE_THETA ** (i_vals / self.head_dim))).astype(np.float32)
+
         self.compiled = True
         status(f"{self.n_kernels} kernels compiled in {self.compile_time_ms:.0f}ms")
         return True
@@ -186,19 +192,17 @@ class RealDraftModel:
         ss = np.mean(x * x) + eps
         return x / np.sqrt(ss) * w
 
-    @staticmethod
-    def _rope(x, pos, n_h, hd):
-        out = x.copy()
-        for h in range(n_h):
-            for i in range(0, hd, 2):
-                freq = 1.0 / (ROPE_THETA ** (float(i) / hd))
-                val = pos * freq
-                cos_v, sin_v = np.cos(val), np.sin(val)
-                off = h * hd + i
-                x0, x1 = out[off], out[off + 1]
-                out[off] = x0 * cos_v - x1 * sin_v
-                out[off + 1] = x0 * sin_v + x1 * cos_v
-        return out
+    def _rope(self, x, pos, n_h, hd):
+        angles = pos * self._rope_freqs        # (hd//2,)
+        cos_v = np.cos(angles)                  # (hd//2,)
+        sin_v = np.sin(angles)                  # (hd//2,)
+        x_r = x.reshape(n_h, hd)               # (n_h, hd)
+        x_even = x_r[:, 0::2]                  # (n_h, hd//2)
+        x_odd = x_r[:, 1::2]                   # (n_h, hd//2)
+        out = np.empty_like(x_r)
+        out[:, 0::2] = x_even * cos_v - x_odd * sin_v
+        out[:, 1::2] = x_even * sin_v + x_odd * cos_v
+        return out.reshape(-1)
 
     @staticmethod
     def _ane_linear(kernel, x, in_d, out_d):
@@ -215,23 +219,34 @@ class RealDraftModel:
 
     def _attention(self, q, k_cache, v_cache, pos):
         scale = 1.0 / np.sqrt(self.head_dim)
-        out = np.zeros(self.n_heads * self.head_dim, dtype=np.float32)
+        hd = self.head_dim
         heads_per_kv = self.n_heads // self.n_kv_heads
+        seq = pos + 1
 
-        for h in range(self.n_heads):
-            kv_h = h // heads_per_kv
-            q_h = q[h * self.head_dim:(h + 1) * self.head_dim]
-            scores = np.zeros(pos + 1, dtype=np.float32)
-            for s in range(pos + 1):
-                k_h = k_cache[s, kv_h * self.head_dim:(kv_h + 1) * self.head_dim]
-                scores[s] = np.dot(q_h, k_h) * scale
-            scores -= scores.max()
-            scores = np.exp(scores)
-            scores /= scores.sum()
-            for s in range(pos + 1):
-                v_h = v_cache[s, kv_h * self.head_dim:(kv_h + 1) * self.head_dim]
-                out[h * self.head_dim:(h + 1) * self.head_dim] += scores[s] * v_h
-        return out
+        # Reshape Q: [n_heads, head_dim]
+        q_heads = q.reshape(self.n_heads, hd)
+
+        # K/V cache: [seq, kv_dim] → [seq, n_kv_heads, head_dim]
+        k_seq = k_cache[:seq].reshape(seq, self.n_kv_heads, hd)
+        v_seq = v_cache[:seq].reshape(seq, self.n_kv_heads, hd)
+
+        # Expand KV heads to match query heads via GQA repeat
+        # k_exp: [seq, n_heads, head_dim]
+        k_exp = np.repeat(k_seq, heads_per_kv, axis=1)
+        v_exp = np.repeat(v_seq, heads_per_kv, axis=1)
+
+        # Scores: [n_heads, seq] = Q[n_heads, hd] @ K[seq, n_heads, hd]^T
+        # einsum: 'nh,snh->ns'
+        scores = np.einsum('nh,snh->ns', q_heads, k_exp) * scale
+
+        # Softmax per head
+        scores -= scores.max(axis=1, keepdims=True)
+        scores = np.exp(scores)
+        scores /= scores.sum(axis=1, keepdims=True)
+
+        # Weighted V: [n_heads, hd] = scores[n_heads, seq] @ V[seq, n_heads, hd]
+        out = np.einsum('ns,snh->nh', scores, v_exp)
+        return out.reshape(-1)
 
     def _classify(self, x):
         logits = np.zeros(self.vocab_size, dtype=np.float32)
@@ -260,13 +275,13 @@ class RealDraftModel:
             k = self._ane_linear(lk['k'], xn, self.dim, kv_dim)
             v = self._ane_linear(lk['v'], xn, self.dim, kv_dim)
 
-            # QK-norm (Qwen3 specific)
-            for h in range(self.n_heads):
-                s, e = h * self.head_dim, (h+1) * self.head_dim
-                q[s:e] = self._rmsnorm(q[s:e], lw['q_norm'])
-            for h in range(self.n_kv_heads):
-                s, e = h * self.head_dim, (h+1) * self.head_dim
-                k[s:e] = self._rmsnorm(k[s:e], lw['k_norm'])
+            # QK-norm (Qwen3 specific) — vectorized across all heads
+            q_r = q.reshape(self.n_heads, self.head_dim)
+            q_ss = np.mean(q_r * q_r, axis=1, keepdims=True) + 1e-6
+            q[:] = (q_r / np.sqrt(q_ss) * lw['q_norm']).reshape(-1)
+            k_r = k.reshape(self.n_kv_heads, self.head_dim)
+            k_ss = np.mean(k_r * k_r, axis=1, keepdims=True) + 1e-6
+            k[:] = (k_r / np.sqrt(k_ss) * lw['k_norm']).reshape(-1)
 
             q = self._rope(q, pos, self.n_heads, self.head_dim)
             k = self._rope(k, pos, self.n_kv_heads, self.head_dim)

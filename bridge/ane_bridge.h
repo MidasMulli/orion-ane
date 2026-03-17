@@ -93,6 +93,26 @@ uint8_t *ane_bridge_build_weight_blob_quantized(const float *src, int rows, int 
 // Free a blob allocated by ane_bridge_build_weight_blob*
 void ane_bridge_free_blob(void *ptr);
 
+// ── Direct IOSurface access (zero-copy I/O) ─────────────────────────
+// Lock an input IOSurface and return direct pointer to its memory.
+// Write your data directly, then call unlock. Eliminates memcpy.
+void *ane_bridge_lock_input(ANEKernelHandle *kernel, int idx);
+void ane_bridge_unlock_input(ANEKernelHandle *kernel, int idx);
+
+// Lock an output IOSurface (read-only) and return direct pointer.
+// Read your data directly, then call unlock. Eliminates memcpy.
+const void *ane_bridge_lock_output(ANEKernelHandle *kernel, int idx);
+void ane_bridge_unlock_output(ANEKernelHandle *kernel, int idx);
+
+// Get the byte size of an input/output IOSurface
+size_t ane_bridge_input_size(ANEKernelHandle *kernel, int idx);
+size_t ane_bridge_output_size(ANEKernelHandle *kernel, int idx);
+
+// Get raw base address without locking (for use with memory barriers)
+// UNSAFE: caller must ensure cache coherency via DMB instructions.
+void *ane_bridge_get_input_base(ANEKernelHandle *kernel, int idx);
+void *ane_bridge_get_output_base(ANEKernelHandle *kernel, int idx);
+
 #ifdef __cplusplus
 }
 #endif
