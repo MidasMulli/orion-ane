@@ -92,12 +92,110 @@ static float cross_entropy_loss(float *dlogits, const float *logits, const uint1
     return total_loss / S;
 }
 
+// KL-divergence loss for knowledge distillation
+// teacher_top_ids[top_k * S]: teacher's top-K token IDs per position (int32, column-major: ids for pos 0, then pos 1, ...)
+// teacher_top_logits[top_k * S]: teacher's top-K logits per position (float32, same layout)
+// full_to_compact[VOCAB]: maps full vocab ID → compact ID (-1 if unused)
+// temperature: softmax temperature for both student and teacher distributions
+static float kl_divergence_loss(float *dlogits, const float *logits,
+                                const int *teacher_top_ids, const float *teacher_top_logits,
+                                const int *full_to_compact, int top_k,
+                                int V, int S, float temperature) {
+    float *s_col = (float*)malloc(V * 4);   // student softmax column
+    float *t_dist = (float*)calloc(V, 4);   // teacher distribution over compact vocab
+    float total_loss = 0;
+    float invS = 1.0f / S;
+    float invT = 1.0f / temperature;
+    float T2 = temperature * temperature;  // gradient scaling for temperature
+
+    for (int t = 0; t < S; t++) {
+        // --- Student softmax (temperature-scaled) ---
+        cblas_scopy(V, logits + t, S, s_col, 1);
+        // Scale by 1/T
+        vDSP_vsmul(s_col, 1, &invT, s_col, 1, (vDSP_Length)V);
+        // Softmax
+        float maxv; vDSP_maxv(s_col, 1, &maxv, (vDSP_Length)V);
+        float neg_max = -maxv;
+        vDSP_vsadd(s_col, 1, &neg_max, s_col, 1, (vDSP_Length)V);
+        int n = V; vvexpf(s_col, s_col, &n);
+        float sum; vDSP_sve(s_col, 1, &sum, (vDSP_Length)V);
+        float inv_sum = 1.0f / sum;
+        vDSP_vsmul(s_col, 1, &inv_sum, s_col, 1, (vDSP_Length)V);
+
+        // --- Teacher distribution from top-K ---
+        memset(t_dist, 0, V * 4);
+        // Apply temperature to teacher logits and softmax over top-K
+        float t_max = -1e30f;
+        const int *t_ids = teacher_top_ids + t * top_k;
+        const float *t_logits = teacher_top_logits + t * top_k;
+        for (int k = 0; k < top_k; k++) {
+            float scaled = t_logits[k] * invT;
+            if (scaled > t_max) t_max = scaled;
+        }
+        float t_sum = 0;
+        float t_probs[top_k];
+        for (int k = 0; k < top_k; k++) {
+            t_probs[k] = expf(t_logits[k] * invT - t_max);
+            t_sum += t_probs[k];
+        }
+        float t_inv = 1.0f / t_sum;
+        for (int k = 0; k < top_k; k++) {
+            int cid = full_to_compact[t_ids[k]];
+            if (cid >= 0) {
+                t_dist[cid] = t_probs[k] * t_inv;
+            }
+        }
+
+        // --- KL divergence: sum(teacher * log(teacher / student)) ---
+        for (int v = 0; v < V; v++) {
+            if (t_dist[v] > 1e-10f) {
+                total_loss += t_dist[v] * logf(t_dist[v] / (s_col[v] + 1e-10f));
+            }
+        }
+
+        // --- Gradient: T^2 * (student - teacher) / S ---
+        // Same form as cross-entropy but with soft targets, scaled by T^2
+        for (int v = 0; v < V; v++) {
+            s_col[v] = (s_col[v] - t_dist[v]) * invS * T2;
+        }
+        cblas_scopy(V, s_col, 1, dlogits + t, S);
+    }
+
+    free(s_col);
+    free(t_dist);
+    return total_loss / S;
+}
+
 // Vocab compaction: build mapping from full 32K vocab to compact vocab
 typedef struct {
     int compact_vocab;          // number of active tokens
     int *full_to_compact;       // [VOCAB] → compact id (-1 if unused)
     int *compact_to_full;       // [compact_vocab] → full vocab id
 } VocabMap;
+
+static VocabMap vocab_map_build_u32(const uint32_t *data, size_t n_tokens, int full_vocab) {
+    VocabMap vm;
+    vm.full_to_compact = (int*)malloc(full_vocab * sizeof(int));
+    memset(vm.full_to_compact, -1, full_vocab * sizeof(int));
+    for (size_t i = 0; i < n_tokens; i++) {
+        if ((int)data[i] < full_vocab)
+            vm.full_to_compact[data[i]] = 0;
+    }
+    int cid = 0;
+    for (int v = 0; v < full_vocab; v++) {
+        if (vm.full_to_compact[v] == 0)
+            vm.full_to_compact[v] = cid++;
+        else
+            vm.full_to_compact[v] = -1;
+    }
+    vm.compact_vocab = cid;
+    vm.compact_to_full = (int*)malloc(cid * sizeof(int));
+    for (int v = 0; v < full_vocab; v++) {
+        if (vm.full_to_compact[v] >= 0)
+            vm.compact_to_full[vm.full_to_compact[v]] = v;
+    }
+    return vm;
+}
 
 static VocabMap vocab_map_build(const uint16_t *data, size_t n_tokens, int full_vocab) {
     VocabMap vm;
@@ -155,9 +253,25 @@ static void embed_lookup(float *x, const float *embed, const uint16_t *tokens, i
     }
 }
 
+static void embed_lookup_u32(float *x, const float *embed, const uint32_t *tokens, int dim, int seq) {
+    for (int t = 0; t < seq; t++) {
+        int tok = (int)tokens[t];
+        for (int d = 0; d < dim; d++)
+            x[d*seq + t] = embed[tok*dim + d];
+    }
+}
+
 static void embed_backward(float *d_embed, const float *dx, const uint16_t *tokens, int dim, int seq) {
     for (int t = 0; t < seq; t++) {
         int tok = tokens[t];
+        for (int d = 0; d < dim; d++)
+            d_embed[tok*dim + d] += dx[d*seq + t];
+    }
+}
+
+static void embed_backward_u32(float *d_embed, const float *dx, const uint32_t *tokens, int dim, int seq) {
+    for (int t = 0; t < seq; t++) {
+        int tok = (int)tokens[t];
         for (int d = 0; d < dim; d++)
             d_embed[tok*dim + d] += dx[d*seq + t];
     }
