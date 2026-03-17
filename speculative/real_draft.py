@@ -55,6 +55,10 @@ class RealDraftModel:
         self.n_kernels = 0
         self._rope_freqs = None  # Precomputed RoPE frequencies
 
+        # C forward pass (optional acceleration)
+        self._c_model = None
+        self._c_lib = None
+
     def load_and_compile(self, status_fn=None, fused=False):
         """Download model, extract weights, compile all ANE kernels.
         If fused=True, compile fused QKV and Gate+Up kernels (fewer dispatches)."""
@@ -227,7 +231,112 @@ class RealDraftModel:
 
         self.compiled = True
         status(f"{self.n_kernels} kernels compiled in {self.compile_time_ms:.0f}ms")
+
+        # ── Step 6: Initialize C forward pass ──
+        self._init_c_forward(status)
+
         return True
+
+    # ── C Forward Pass Acceleration ────────────────────────────────────
+
+    def _init_c_forward(self, status):
+        """Try to load libane_bridge.dylib and init C forward model."""
+        bridge_path = os.path.join(os.path.dirname(__file__), "..", "bridge", "libane_bridge.dylib")
+        if not os.path.exists(bridge_path):
+            status("C bridge not found — using Python forward pass")
+            return
+
+        try:
+            c_lib = ctypes.CDLL(bridge_path)
+
+            # Define the config struct for C
+            class FPModelConfig(ctypes.Structure):
+                _fields_ = [
+                    ("dim", ctypes.c_int), ("n_heads", ctypes.c_int),
+                    ("n_kv_heads", ctypes.c_int), ("head_dim", ctypes.c_int),
+                    ("hidden_dim", ctypes.c_int), ("vocab_size", ctypes.c_int),
+                    ("n_layers", ctypes.c_int), ("max_seq", ctypes.c_int),
+                    ("ane_spatial", ctypes.c_int), ("rope_theta", ctypes.c_float),
+                ]
+
+            # Set up function signatures
+            c_lib.forward_model_create.argtypes = [ctypes.POINTER(FPModelConfig)]
+            c_lib.forward_model_create.restype = ctypes.c_void_p
+            c_lib.forward_model_free.argtypes = [ctypes.c_void_p]
+            c_lib.forward_model_set_embed.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            c_lib.forward_model_set_final_norm.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            c_lib.forward_model_set_layer_weights.argtypes = [
+                ctypes.c_void_p, ctypes.c_int,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            c_lib.forward_model_set_layer_kernels.argtypes = [
+                ctypes.c_void_p, ctypes.c_int,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            c_lib.forward_model_set_layer_kernels_fused.argtypes = [
+                ctypes.c_void_p, ctypes.c_int,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            c_lib.forward_model_add_cls_kernel.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+            c_lib.forward_model_reset_cache.argtypes = [ctypes.c_void_p]
+            c_lib.forward_model_forward_token.argtypes = [
+                ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+            c_lib.forward_model_forward_token.restype = ctypes.POINTER(ctypes.c_float)
+
+            # Create C model
+            config = FPModelConfig(
+                dim=self.dim, n_heads=self.n_heads, n_kv_heads=self.n_kv_heads,
+                head_dim=self.head_dim, hidden_dim=self.hidden_dim,
+                vocab_size=self.vocab_size, n_layers=self.n_layers,
+                max_seq=MAX_SEQ, ane_spatial=ANE_SPATIAL, rope_theta=ROPE_THETA)
+
+            c_model = c_lib.forward_model_create(ctypes.byref(config))
+            if not c_model:
+                status("C forward_model_create failed — using Python forward pass")
+                return
+
+            # Transfer weights
+            embed_flat = self.embed_w.astype(np.float32).ravel()
+            c_lib.forward_model_set_embed(c_model,
+                embed_flat.ctypes.data_as(ctypes.c_void_p))
+
+            fn = self.final_norm_w.astype(np.float32)
+            c_lib.forward_model_set_final_norm(c_model,
+                fn.ctypes.data_as(ctypes.c_void_p))
+
+            for l in range(self.n_layers):
+                lw = self.layer_weights[l]
+                lk = self.kernels[l]
+
+                an = lw['attn_norm'].astype(np.float32)
+                ffn = lw['ffn_norm'].astype(np.float32)
+                qn = lw['q_norm'].astype(np.float32)
+                kn = lw['k_norm'].astype(np.float32)
+
+                c_lib.forward_model_set_layer_weights(c_model, l,
+                    an.ctypes.data_as(ctypes.c_void_p),
+                    ffn.ctypes.data_as(ctypes.c_void_p),
+                    qn.ctypes.data_as(ctypes.c_void_p),
+                    kn.ctypes.data_as(ctypes.c_void_p))
+
+                if self.fused:
+                    c_lib.forward_model_set_layer_kernels_fused(c_model, l,
+                        lk['qkv'], lk['o'], lk['gate_up'], lk['down'])
+                else:
+                    c_lib.forward_model_set_layer_kernels(c_model, l,
+                        lk['q'], lk['k'], lk['v'], lk['o'],
+                        lk['gate'], lk['up'], lk['down'])
+
+            for kernel, out_ch in self.cls_kernels:
+                c_lib.forward_model_add_cls_kernel(c_model, kernel, out_ch)
+
+            self._c_model = c_model
+            self._c_lib = c_lib
+            status("C forward pass initialized ✓ (zero Python in hot loop)")
+
+        except Exception as e:
+            status(f"C forward init failed: {e} — using Python forward pass")
+            self._c_model = None
+            self._c_lib = None
 
     # ── Forward pass primitives ─────────────────────────────────────────
 
@@ -304,7 +413,13 @@ class RealDraftModel:
     # ── Token-level forward ─────────────────────────────────────────────
 
     def forward_token(self, token_id, pos):
-        """Single token forward pass → logits."""
+        """Single token forward pass → logits. Routes to C if available."""
+        if self._c_model is not None:
+            ptr = self._c_lib.forward_model_forward_token(
+                self._c_model, int(token_id), int(pos))
+            return np.ctypeslib.as_array(ptr, shape=(self.vocab_size,)).copy()
+
+        # Python fallback
         x = self.embed_w[token_id].copy()
         q_dim = self.n_heads * self.head_dim
         kv_dim = self.n_kv_heads * self.head_dim
@@ -363,6 +478,9 @@ class RealDraftModel:
 
     def reset_cache(self):
         """Reset KV caches for new generation."""
+        if self._c_model is not None:
+            self._c_lib.forward_model_reset_cache(self._c_model)
+            return
         kv_dim = self.n_kv_heads * self.head_dim
         self.k_caches = [np.zeros((MAX_SEQ, kv_dim), dtype=np.float32)
                          for _ in range(self.n_layers)]
@@ -379,7 +497,7 @@ class RealDraftModel:
 
     def generate_draft(self, prompt_ids, k_draft):
         """
-        Generate K draft tokens from prompt.
+        Generate K draft tokens from prompt (full reset + prefill).
         Returns list of (token_id, logits_top5) tuples.
         """
         self.reset_cache()
@@ -401,3 +519,53 @@ class RealDraftModel:
             pos += 1
 
         return drafts
+
+    # ── Incremental draft API (for speculative decoding) ─────────────
+
+    def prefill(self, token_ids):
+        """Reset cache and prefill prompt. Returns logits from last token."""
+        self.reset_cache()
+        self._draft_pos = 0
+        logits = None
+        for tid in token_ids:
+            logits = self.forward_token(int(tid), self._draft_pos)
+            self._draft_pos += 1
+        self._last_logits = logits
+        return logits
+
+    def draft_continue(self, k_draft):
+        """
+        Draft K tokens from current cache position (no reset, no re-prefill).
+        Returns list of (token_id, logits_top5) tuples.
+        """
+        logits = self._last_logits
+        drafts = []
+        for _ in range(k_draft):
+            tok = int(np.argmax(logits))
+            top5_idx = np.argsort(logits)[-5:][::-1]
+            top5 = [(int(idx), float(logits[idx])) for idx in top5_idx]
+            drafts.append((tok, top5))
+            logits = self.forward_token(tok, self._draft_pos)
+            self._draft_pos += 1
+        self._last_logits = logits
+        return drafts
+
+    def rollback_to(self, pos):
+        """
+        Roll back draft position after rejection.
+        The KV cache entries beyond `pos` are stale but harmless —
+        they'll be overwritten when we forward_token at those positions.
+        We just need to reset the position counter.
+        """
+        self._draft_pos = pos
+
+    def feed_tokens(self, token_ids, start_pos):
+        """
+        Feed correction tokens into the cache at specific positions.
+        Used after GPU verification rejects some draft tokens.
+        """
+        for i, tid in enumerate(token_ids):
+            logits = self.forward_token(int(tid), start_pos + i)
+        self._draft_pos = start_pos + len(token_ids)
+        self._last_logits = logits
+        return logits

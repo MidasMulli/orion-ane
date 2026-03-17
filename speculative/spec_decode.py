@@ -75,11 +75,12 @@ class SpeculativeDecoder:
 
         self.draft = RealDraftModel()
 
-        # Compile ANE kernels (runs synchronously — heavy)
+        # Compile ANE kernels with fusion (runs synchronously — heavy)
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(
             None, self.draft.load_and_compile,
-            lambda msg: print(f"  [ANE] {msg}"))
+            lambda msg: print(f"  [ANE] {msg}"),
+            True)  # fused=True
 
         if not success:
             await broadcast({"type": "error", "msg": "ANE model compilation failed"})
@@ -370,8 +371,8 @@ app.router.add_get("/ws", handle_ws)
 
 if __name__ == "__main__":
     print("╔══════════════════════════════════════════════════════════╗")
-    print("║  SPECULATIVE DECODING — Real Weights                    ║")
-    print("║  ANE: Qwen3-0.6B (215 kernels) ↔ GPU: Qwen3.5-9B      ║")
+    print("║  SPECULATIVE DECODING — Fused C Forward Pass            ║")
+    print("║  ANE: Qwen3-0.6B (122 fused) ↔ GPU: Qwen3.5-9B        ║")
     print(f"║  Dashboard: http://localhost:{PORT}                       ║")
     print("╚══════════════════════════════════════════════════════════╝")
     web.run_app(app, host="0.0.0.0", port=PORT, print=lambda *a: None)
