@@ -52,15 +52,18 @@ def read_checkpoint(path):
     print(f"Reading checkpoint: {path}")
 
     with open(path, 'rb') as f:
-        # Header
-        step = struct.unpack('<i', f.read(4))[0]
-        total_steps = struct.unpack('<i', f.read(4))[0]
-        lr = struct.unpack('<f', f.read(4))[0]
-        loss = struct.unpack('<f', f.read(4))[0]
-        cum_train = struct.unpack('<d', f.read(8))[0]
-        cum_wall = struct.unpack('<d', f.read(8))[0]
-        cum_steps = struct.unpack('<i', f.read(4))[0]
-        adam_t = struct.unpack('<i', f.read(4))[0]
+        # CkptHdr: 96 bytes
+        hdr = f.read(96)
+        magic = struct.unpack_from('<i', hdr, 0)[0]
+        version = struct.unpack_from('<i', hdr, 4)[0]
+        step = struct.unpack_from('<i', hdr, 8)[0]
+        total_steps = struct.unpack_from('<i', hdr, 12)[0]
+        lr = struct.unpack_from('<f', hdr, 40)[0]
+        loss = struct.unpack_from('<f', hdr, 44)[0]
+
+        if magic != 0x424C5A54 or version != 4:
+            print(f"  ERROR: Bad checkpoint (magic={hex(magic)}, version={version})")
+            sys.exit(1)
 
         print(f"  Step {step}/{total_steps}, loss={loss:.4f}, lr={lr:.2e}")
 

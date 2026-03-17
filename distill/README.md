@@ -38,19 +38,36 @@ python generate_teacher.py --data qwen3_data.bin \
 
 Storage: ~49 MB for 1000 sequences (256 positions × 32 top-K × 8 bytes/entry).
 
+### Step 2.5: Import pretrained weights (recommended)
+
+Start from pretrained Qwen3-0.6B weights instead of random init — much faster convergence:
+
+```bash
+python import_weights.py --model Qwen/Qwen3-0.6B \
+                         --output ../training/training_dynamic/ane_qwen3_06b_dyn_ckpt.bin
+```
+
+Creates a valid training checkpoint (6.8 GB) with pretrained weights and zeroed Adam states.
+
 ### Step 3: Train with distillation
 
 ```bash
 cd ../training/training_dynamic/
 make MODEL=qwen3_06b
 
-./train --scratch --token32 \
+# From pretrained (recommended):
+./train --resume --token32 \
         --data ../../distill/qwen3_data.bin \
         --distill ../../distill/teacher_logits.bin \
         --temperature 2.0 \
         --alpha 0.5 \
         --lr 1e-4 \
         --steps 5000
+
+# Or from scratch:
+./train --scratch --token32 \
+        --data ../../distill/qwen3_data.bin \
+        --distill ../../distill/teacher_logits.bin
 ```
 
 **Flags:**
@@ -58,7 +75,8 @@ make MODEL=qwen3_06b
 - `--token32` — Use uint32 token data (required for Qwen3 vocab > 65535)
 - `--temperature <T>` — Softmax temperature for KL loss (default: 2.0, higher = softer)
 - `--alpha <α>` — Weight for hard CE loss; KL weight = 1-α (default: 0.5)
-- `--scratch` — Initialize from random weights (pretrained import coming soon)
+- `--resume` — Load from checkpoint (use with import_weights.py for pretrained start)
+- `--scratch` — Initialize from random weights
 
 ### Step 4: Export and test
 
@@ -98,6 +116,8 @@ Current acceptance rate with pretrained 0.6B: ~48%. Target after distillation: 6
 distill/
 ├── prepare_data.py      # Tokenize text with Qwen3 tokenizer → uint32 binary
 ├── generate_teacher.py  # Run Qwen3-4B teacher, save top-K logits
+├── import_weights.py    # Import HF pretrained → ANE checkpoint (6.8 GB)
 ├── export_weights.py    # Convert ANE checkpoint → HuggingFace safetensors
+├── test_pipeline.py     # End-to-end format verification tests
 └── README.md            # This file
 ```
