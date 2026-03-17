@@ -122,7 +122,13 @@ Key optimizations:
 ├── bridge/
 │   ├── ane_bridge.h            # C-callable ANE API (compile, eval, I/O)
 │   ├── ane_bridge.m            # Bridge implementation (int8 + fp16 weight blobs)
+│   ├── forward_pass.h          # C forward pass API (fused/unfused kernel modes)
+│   ├── forward_pass.c          # Full transformer inference in C (vDSP + ANE)
 │   └── Makefile
+├── speculative/
+│   ├── real_draft.py           # Qwen3-0.6B ANE draft model (Python loader + compiler)
+│   └── ane_draft.py            # ANE kernel compilation helpers
+├── test_c_forward.py           # C vs Python forward pass comparison + benchmarks
 └── training/
     ├── ane_runtime.h           # ANE private API wrapper (compile, eval, IOSurface)
     ├── ane_classifier.h        # Classifier fwd (32K conv), softmax, rmsnorm on ANE
@@ -213,6 +219,19 @@ No external dependencies. Uses only system frameworks + private ANE APIs resolve
 |-------|------------|------------|-------|
 | Stories110M | 6.7ms | 1.9ms | 8.8ms |
 | Qwen3-0.6B | 9.7ms | 2.3ms | 12.0ms |
+
+**C forward pass — ANE-native token generation (M5 Air):**
+
+Full transformer inference in C with fused ANE kernels. Zero Python in the hot loop — CPU ops (RMSNorm, RoPE, attention, SiLU) via Accelerate vDSP/cblas, all linear projections dispatched to ANE via direct `_ANEClient` eval.
+
+| Metric | Unfused (206 dispatches) | Fused (122 dispatches) |
+|--------|--------------------------|------------------------|
+| ANE eval time | ~139ms | 33.8ms |
+| Total latency | ~145ms/tok | 37.6ms/tok |
+| Throughput | ~7 tok/s | **26.6 tok/s** (avg), **32.7 tok/s** (peak) |
+| CPU ops | 0.37ms | 0.68ms |
+
+Kernel fusion concatenates Q+K+V weights into a single ANE kernel (3 dispatches → 1) and Gate+Up into another (2 → 1), reducing per-layer dispatches from 7 to 4. The fused kernels are also individually faster — larger matrices let the ANE batch more efficiently.
 
 ## Disclaimer
 
