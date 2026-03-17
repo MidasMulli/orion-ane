@@ -125,8 +125,10 @@ Key optimizations:
 │   ├── forward_pass.h          # C forward pass API (fused/unfused kernel modes)
 │   ├── forward_pass.c          # Full transformer inference in C (vDSP + ANE)
 │   └── Makefile
+├── bench_speculative_local.py   # Same-process speculative decode benchmark
 ├── speculative/
 │   ├── real_draft.py           # Qwen3-0.6B ANE draft model (Python loader + compiler)
+│   ├── mlx_local_verifier.py   # In-process MLX verifier (persistent KV cache)
 │   └── ane_draft.py            # ANE kernel compilation helpers
 ├── test_c_forward.py           # C vs Python forward pass comparison + benchmarks
 └── training/
@@ -232,6 +234,24 @@ Full transformer inference in C with fused ANE kernels. Zero Python in the hot l
 | CPU ops | 0.37ms | 0.68ms |
 
 Kernel fusion concatenates Q+K+V weights into a single ANE kernel (3 dispatches → 1) and Gate+Up into another (2 → 1), reducing per-layer dispatches from 7 to 4. The fused kernels are also individually faster — larger matrices let the ANE batch more efficiently.
+
+**Speculative decoding — ANE draft + GPU verify (M5 Air, 16GB):**
+
+Same-process speculative decoding with Qwen3-0.6B on ANE drafting K=5 tokens, verified by Qwen3-4B on GPU via MLX. Both models loaded in one process, no HTTP overhead, batch verification in a single forward pass.
+
+| Method | Model | Tokens | Time | Throughput |
+|--------|-------|--------|------|------------|
+| GPU-only | Qwen3-4B (MLX) | 30 | 693ms | **43.3 tok/s** |
+| Speculative | 0.6B ANE + 4B GPU | 31 | 6,031ms | 5.1 tok/s |
+
+| Metric | Value |
+|--------|-------|
+| Acceptance rate | 48.3% (14/29 rounds accepted) |
+| ANE draft time | 2,686ms (44.5%) |
+| GPU verify time | 3,345ms (55.5%) |
+| Tokens per round | 3.4 avg |
+
+**Verdict:** The architecture works correctly — tokenizer-compatible models, proper KV cache management, batch verification, incremental drafting. But speculative decoding requires the draft model to be *much* faster than the verifier per-token. On M5 Air 16GB, the ANE draft (44ms/tok) is slower than the GPU verifier (23ms/tok for 4B), so there's no speedup. The correct configuration needs a larger, slower verifier — e.g., 14B+ on 32GB+ hardware where GPU autoregressive drops to ~10 tok/s but ANE stays at 26 tok/s.
 
 ## Disclaimer
 
