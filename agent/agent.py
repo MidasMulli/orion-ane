@@ -910,6 +910,32 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
             except Exception:
                 pass
 
+    # 5. Enricher service status — check heartbeat and PID
+    heartbeat_path = os.path.join(VAULT_PATH, "midas", ".enricher_heartbeat")
+    pid_path = "/tmp/phantom-enricher.pid"
+    service_running = False
+    try:
+        with open(pid_path, "r") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # Check if process exists (signal 0 = no-op)
+        service_running = True
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        pass
+
+    if service_running:
+        last_beat = ""
+        try:
+            with open(heartbeat_path, "r") as f:
+                last_beat = f.read().strip()
+        except FileNotFoundError:
+            pass
+        if last_beat:
+            lines.append(f"- Enricher service: running (last heartbeat: {last_beat})")
+        else:
+            lines.append(f"- Enricher service: running")
+    else:
+        lines.append(f"- Enricher service: not running (start with: launchctl load ~/Library/LaunchAgents/com.phantom.enricher.plist)")
+
     return "\n".join(lines) if lines else ""
 
 
