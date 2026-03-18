@@ -817,6 +817,102 @@ def print_banner(mem_count=0, browser=False, ane=False):
     print(f"  {DIM}{mem_count} memories │ browser {RESET}{browser_dot}{DIM} │ ane {RESET}{ane_dot}{DIM} │ dash → :{DASHBOARD_PORT}{RESET}")
     print()
 
+def generate_briefing(stats: dict, playbook_content: str) -> str:
+    """Gather data for Midas's session-opening briefing. Returns a summary string
+    that gets injected as a system message so Midas can comment on it."""
+    lines = []
+
+    # 1. Memory delta — check for a last-session marker
+    total = stats.get("total_memories", 0)
+    marker_path = os.path.join(VAULT_PATH, "midas", ".last_session_memories")
+    last_count = 0
+    try:
+        with open(marker_path, "r") as f:
+            last_count = int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        pass
+    delta = total - last_count
+    if delta > 0:
+        lines.append(f"- {delta} new memories since last session ({total} total)")
+    elif last_count == 0:
+        lines.append(f"- {total} memories in store (first session tracking)")
+    else:
+        lines.append(f"- No new memories since last session ({total} total)")
+
+    # Update marker for next session
+    try:
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w") as f:
+            f.write(str(total))
+    except Exception:
+        pass
+
+    # 2. Enricher output — check for recent insights and relationships
+    insights_dir = os.path.join(VAULT_PATH, "memory", "insights")
+    if os.path.isdir(insights_dir):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_file = os.path.join(insights_dir, f"patterns-{today}.md")
+        if os.path.exists(today_file):
+            try:
+                with open(today_file, "r") as f:
+                    content = f.read()
+                # Count insight sections (## headers)
+                import re
+                sections = re.findall(r'^## .+', content, re.MULTILINE)
+                if sections:
+                    lines.append(f"- Enricher produced {len(sections)} insight(s) today: {', '.join(s.replace('## ', '') for s in sections[:3])}")
+            except Exception:
+                pass
+
+    # Check relationships
+    rel_path = os.path.join(VAULT_PATH, "memory", "relationships.md")
+    if os.path.exists(rel_path):
+        try:
+            rel_size = os.path.getsize(rel_path)
+            # Count relationship entries (lines starting with -)
+            with open(rel_path, "r") as f:
+                rel_lines = [l for l in f if l.strip().startswith("- ")]
+            if rel_lines:
+                lines.append(f"- Relationship graph: {len(rel_lines)} connections mapped")
+        except Exception:
+            pass
+
+    # 3. Playbook — overdue scans and queued improvements
+    if playbook_content:
+        # Check scan schedule for overdue items
+        import re
+        schedule_match = re.findall(r'\|\s*(\w[\w\s]+?)\s*\|\s*\d+h?\s*\|\s*(never|[\d-]+\s*[\d:]*)\s*\|', playbook_content)
+        overdue = []
+        for task_name, last_run in schedule_match:
+            if last_run.strip() == "never":
+                overdue.append(task_name.strip())
+        if overdue:
+            lines.append(f"- Overdue scans: {', '.join(overdue)}")
+
+        # Check improvement queue
+        queue_items = re.findall(r'- \[ \] (.+)', playbook_content)
+        if queue_items:
+            lines.append(f"- Improvement queue: {len(queue_items)} items (next: {queue_items[0].strip()[:60]})")
+
+    # 4. Stale flags
+    if os.path.isdir(insights_dir):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        stale_file = os.path.join(insights_dir, f"stale-{today}.md")
+        if os.path.exists(stale_file):
+            try:
+                with open(stale_file, "r") as f:
+                    stale_content = f.read()
+                stale_count = stale_content.count("- ")
+                if stale_count > 0:
+                    lines.append(f"- {stale_count} potentially stale fact(s) flagged")
+            except Exception:
+                pass
+
+    return "\n".join(lines) if lines else ""
+
+
 def print_tool_call(name: str, args: dict):
     icon = TOOL_ICONS.get(name, "🔧")
     if name == "memory_ingest":
@@ -1061,6 +1157,37 @@ def run_agent():
 
     # Conversation state
     messages = [{"role": "system", "content": system_with_playbook}]
+
+    # Session briefing — Midas reports what's changed since last session
+    briefing_data = generate_briefing(stats, playbook_content)
+    if briefing_data:
+        print(f"  {CYAN}┌─ Session Briefing ─────────────────────────{RESET}")
+        for line in briefing_data.split("\n"):
+            print(f"  {CYAN}│{RESET} {DIM}{line}{RESET}")
+        print(f"  {CYAN}└─────────────────────────────────────────────{RESET}")
+        print()
+
+        # Let Midas comment on the briefing
+        briefing_prompt = (
+            f"You just booted up. Here's what changed since your last session:\n\n{briefing_data}\n\n"
+            "Give a brief (2-4 sentence) status update based on this. Be direct — what matters, "
+            "what needs attention, what you'd recommend doing first. Don't list everything, just the highlights."
+        )
+        messages.append({"role": "user", "content": briefing_prompt})
+        try:
+            briefing_resp = client.chat.completions.create(
+                model=MLX_MODEL,
+                messages=messages,
+                max_tokens=256,
+                temperature=0.7,
+            )
+            briefing_text = briefing_resp.choices[0].message.content.strip()
+            if briefing_text:
+                print(f"  {CYAN}Midas:{RESET} {briefing_text}")
+                print()
+                messages.append({"role": "assistant", "content": briefing_text})
+        except Exception:
+            pass  # Silent fail — briefing is nice-to-have, not critical
 
     while True:
         # Get user input
