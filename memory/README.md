@@ -24,6 +24,12 @@ Three processors. Three loops. Zero contention.
 └──────────────────────────────────────────┘
 ```
 
+## Dashboard
+
+![Phantom Memory Dashboard](dashboard_screenshot.png)
+
+Real-time visualization of the knowledge graph, activity feed, memory stats, fact type distribution, and recent decisions. Dark cyberpunk UI at `http://localhost:8422`.
+
 ## Quick Start
 
 ```python
