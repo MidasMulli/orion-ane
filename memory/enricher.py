@@ -62,7 +62,7 @@ class RegexClassifier:
     """Default classifier using the same keyword heuristics as FactExtractor."""
 
     def __init__(self):
-        from daemon import FactExtractor
+        from phantom_memory.daemon import FactExtractor
         self._classify = FactExtractor.classify_type
 
     def classify(self, text: str) -> str:
@@ -86,7 +86,7 @@ class ANEClassifier:
 
     def _get_client(self):
         if self._client is None:
-            from ane_server import ANEClient
+            from phantom_memory.ane_server import ANEClient
             self._client = ANEClient(self._socket_path)
         return self._client
 
@@ -591,7 +591,7 @@ class SweepEngine:
                 type_counts[fact_type] += 1
 
                 # Extract quantities
-                from daemon import FactExtractor
+                from phantom_memory.daemon import FactExtractor
                 for q in FactExtractor.QUANTITY_PATTERN.findall(clean_text):
                     if q not in quantities:
                         quantities.append(q)

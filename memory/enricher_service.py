@@ -68,7 +68,7 @@ def main():
 
     # Import and boot the daemon with enricher
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from daemon import MemoryDaemon
+    from phantom_memory.daemon import MemoryDaemon
 
     daemon = MemoryDaemon(
         vault_path=VAULT_PATH,
@@ -85,7 +85,7 @@ def main():
             daemon.enrich_once()
         except AttributeError:
             # If enrich_once doesn't exist, run via enricher directly
-            from enricher import PhantomEnricher
+            from phantom_memory.enricher import PhantomEnricher
             enricher = PhantomEnricher(store=daemon.store, vault=daemon.vault, interval=args.interval)
             enricher.run_once()
         log.info("Sweeps complete. Exiting.")

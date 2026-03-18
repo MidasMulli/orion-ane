@@ -26,3 +26,10 @@ __pycache__/
 # Environments
 .venv/
 env/
+
+# Package symlink (phantom_memory -> memory)
+phantom_memory
+
+# ChromaDB data
+chromadb*/
+memory_store/

@@ -18,8 +18,11 @@ import tracemalloc
 from datetime import datetime, timedelta
 
 # Add parent to path for daemon import
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daemon import MemoryDaemon
+try:
+    from phantom_memory.daemon import MemoryDaemon
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from daemon import MemoryDaemon
 
 # ── Test Configuration ────────────────────────────────────────────
 

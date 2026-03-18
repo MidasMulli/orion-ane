@@ -36,8 +36,11 @@ import logging
 from mcp.server.fastmcp import FastMCP
 
 # Import daemon components
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daemon import MemoryDaemon
+try:
+    from phantom_memory.daemon import MemoryDaemon
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from daemon import MemoryDaemon
 
 # ── Config ──
 VAULT_PATH = os.environ.get("MEMORY_VAULT_PATH", "/Users/midas/Desktop/cowork/vault")

@@ -792,17 +792,17 @@ class MemoryDaemon:
 
         # Start ANE server + enricher if enabled
         if self._enable_enricher:
-            from enricher import PhantomEnricher
+            from phantom_memory.enricher import PhantomEnricher
 
             # Auto-launch ANE server if CoreML model exists
             classifier = None
             self._ane_process = None
             try:
-                from ane_server import ANEClient, SOCKET_PATH
+                from phantom_memory.ane_server import ANEClient, SOCKET_PATH
                 if not ANEClient.is_running():
                     self._ane_process = self._launch_ane_server()
                 if ANEClient.is_running():
-                    from enricher import ANEClassifier
+                    from phantom_memory.enricher import ANEClassifier
                     classifier = ANEClassifier()
                     print("[MemoryDaemon] ✓ ANE server connected — 1.7B on Neural Engine")
                 else:
@@ -849,7 +849,7 @@ class MemoryDaemon:
         )
 
         # Wait for server to be ready (model load + warmup)
-        from ane_server import ANEClient
+        from phantom_memory.ane_server import ANEClient
         for i in range(30):  # 30s timeout
             time.sleep(1)
             if ANEClient.is_running():

@@ -560,9 +560,12 @@ class MemoryBridge:
 
     def start(self):
         """Import and start the daemon in-process with enricher."""
-        daemon_dir = os.path.join(os.path.dirname(__file__), "..", "memory")
-        sys.path.insert(0, os.path.abspath(daemon_dir))
-        from daemon import MemoryDaemon
+        try:
+            from phantom_memory.daemon import MemoryDaemon
+        except ImportError:
+            daemon_dir = os.path.join(os.path.dirname(__file__), "..", "memory")
+            sys.path.insert(0, os.path.abspath(daemon_dir))
+            from daemon import MemoryDaemon
 
         vault_path = "/Users/midas/Desktop/cowork/vault"
         db_path = "/Users/midas/Desktop/cowork/orion-ane/memory/chromadb_live"

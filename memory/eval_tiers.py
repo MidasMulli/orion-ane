@@ -50,7 +50,10 @@ def test(name, passed, detail=""):
 
 def eval_cpu():
     section("TIER 1: CPU — Extraction + Embedding + Recall")
-    from daemon import FactExtractor, MemoryStore
+    try:
+        from phantom_memory.daemon import FactExtractor, MemoryStore
+    except ImportError:
+        from daemon import FactExtractor, MemoryStore
     import tempfile
 
     ext = FactExtractor()
@@ -171,7 +174,10 @@ def eval_ane():
     section("TIER 2: ANE — 1.7B Generative Analysis on Neural Engine")
 
     try:
-        from ane_server import ANEClient
+        try:
+            from phantom_memory.ane_server import ANEClient
+        except ImportError:
+            from ane_server import ANEClient
         if not ANEClient.is_running():
             print(f"  {YELLOW}⚠ ANE server not running — skipping{RESET}")
             print(f"  {DIM}Start with: midas (auto-launches) or python ane_server.py{RESET}")
