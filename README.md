@@ -1,4 +1,24 @@
-# ANE Training — Backpropagation on Apple Neural Engine
+# Orion ANE
+
+Two projects in one repo, both pushing Apple Silicon beyond what Apple intended.
+
+## [Phantom Memory](memory/) — Persistent Memory + Continuous Enrichment for Local LLMs
+
+Zero-cost persistent memory with a self-improving knowledge graph. Extracts facts, embeds them, stores in ChromaDB, writes to an Obsidian vault — then continuously enriches the vault in the background with five autonomous sweeps: reclassify, relate, stale-detect, pattern-find, and consolidate.
+
+Mem0 stores facts. **Phantom thinks about them.**
+
+```
+┌─ GPU ── Your LLM (conversation + reasoning) ──────────┐
+┌─ CPU ── Memory Daemon (extract, embed, store) ─────────┐  1,721 emb/sec
+┌─ ANE ── Enricher (classify, relate, analyze) ──────────┐  ~2W, zero GPU impact
+```
+
+Three processors. Three loops. Zero contention. **[Full documentation →](memory/README.md)**
+
+---
+
+## ANE Training — Backpropagation on Apple Neural Engine
 
 Training neural networks directly on Apple's Neural Engine (ANE) via reverse-engineered private APIs. No CoreML training APIs, no Metal, no GPU — pure ANE compute.
 
@@ -110,6 +130,19 @@ Key optimizations:
 ## File Structure
 
 ```
+├── memory/
+│   ├── README.md               # Phantom Memory documentation
+│   ├── daemon.py               # Memory daemon (extract, embed, store, vault write)
+│   ├── enricher.py             # Continuous enrichment (5 sweeps, ANE-ready protocols)
+│   ├── ane_server.py           # Persistent ANE inference server (Unix socket + HTTP)
+│   ├── eval_tiers.py           # Three-tier validation suite (22/22)
+│   ├── dashboard.py            # TUI monitoring dashboard
+│   ├── mcp_server.py           # MCP server wrapper
+│   └── scale_test.py           # Scalability benchmarks
+├── agent/
+│   ├── agent.py                # Phantom agent (Midas) — tools, boot, conversation loop
+│   ├── browser.py              # Chrome CDP client for authenticated browsing
+│   └── monitor.py              # System performance dashboard
 ├── api_exploration.m           # Initial ANE API discovery
 ├── inmem_basic.m               # In-memory MIL compilation proof-of-concept
 ├── inmem_bench.m               # ANE dispatch latency benchmarks

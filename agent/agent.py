@@ -70,7 +70,29 @@ For deeper browsing, use browse_navigate → browse_read → browse_js.
 
 **If browse_navigate returns "auth_wall": true**, STOP. Do NOT try other URLs on the same site. Tell the user: "I can't access [site] — you'll need to log in first in the debug Chrome." The debug Chrome is at ~/.chrome-debug.
 
+## KNOWLEDGE VAULT (your strategic brain)
+You have READ access to the full Obsidian knowledge vault. This is where the user and Claude (your senior partner) maintain project context, decisions, roadmaps, domain knowledge, and infrastructure docs. Think of it as the company wiki.
+
+**Use vault_read to:**
+- Check project status ("what's the current state of the prompt optimizer?")
+- Look up past decisions and their rationale
+- Find domain references (ISDA, regulatory, collateral docs)
+- Review the roadmap and infrastructure map
+- Get context before answering strategic questions
+
+**Use vault_insight to:**
+- Cross-reference vault knowledge with your conversation memories
+- Answer questions that span multiple projects or time periods
+- Surface connections the user hasn't asked about
+
+Key vault files: HOME.md (command center), Roadmap.md, Decision Log.md, Infrastructure Map.md, projects/active/ (current work), domain/ (ISDA, regulatory, collateral)
+
+**Important:** You can READ the vault but NOT write to it (except memory/ which the daemon handles). The vault is curated by the user + Claude. You benefit from it, you don't edit it.
+
 ## TOOLS
+- playbook_update: Read or update your playbook (self-knowledge file). Use after completing tasks to log what worked, update metrics, refine your approach. This is how you improve across sessions.
+- vault_read: Read vault files or search across the knowledge base
+- vault_insight: Cross-reference vault + memory for deep context on a topic
 - memory_ingest: Store your own insights/summaries in long-term memory
 - memory_recall: Search long-term memory for relevant context
 - memory_insights: Get enricher analysis — entity relationships, patterns, stale items. Use when discussing entities or asking about connections between topics.
@@ -188,6 +210,71 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "vault_read",
+            "description": "Read from the Obsidian knowledge vault — project pages, roadmap, decisions, infrastructure docs, domain knowledge. Use this to get strategic context, check project status, review past decisions, or find domain references (ISDA, regulatory, collateral). READ-ONLY — you cannot modify vault files outside memory/.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within vault (e.g., 'HOME.md', 'projects/active/phantom.md', 'Roadmap.md', 'Decision Log.md', 'domain/isda/'). Leave empty to list available files.",
+                        "default": ""
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query — if provided, searches across all vault markdown files for matching content. Ignores path.",
+                        "default": ""
+                    }
+                },
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vault_insight",
+            "description": "Cross-reference vault knowledge with memory to generate insights. Pulls project context, roadmap, decisions, AND conversation memories together. Use when the user asks about project status, connections between work streams, or strategic questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Topic or question to analyze across vault + memory"
+                    }
+                },
+                "required": ["topic"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "playbook_update",
+            "description": "Update your playbook — your self-knowledge file. Use after completing scans, tasks, or discovering what works/doesn't. Sections: scan_schedule, what_works, what_doesnt, high_signal, self_eval, improvement_queue, lessons. You can also pass 'read' as action to re-read current playbook.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "section": {
+                        "type": "string",
+                        "description": "Which section to update (e.g. 'what_works', 'self_eval', 'scan_schedule', 'improvement_queue', 'lessons', or 'full' to read the whole file)"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["append", "replace", "read"],
+                        "description": "append: add to section. replace: overwrite section. read: return current content."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The content to append or replace with. Not needed for 'read' action."
+                    }
+                },
+                "required": ["section", "action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "shell",
             "description": "Run a shell command and return output. Use for file operations, system checks, running scripts. Ask before destructive operations.",
             "parameters": {
@@ -203,6 +290,253 @@ TOOLS = [
         }
     },
 ]
+
+# ── Vault Access (read-only) ───────────────────────────────────────────────
+
+VAULT_PATH = "/Users/midas/Desktop/cowork/vault"
+
+def vault_read(path: str = "", query: str = "") -> dict:
+    """Read files or search the Obsidian vault. Read-only."""
+    import glob as globmod
+
+    if query:
+        # Search across all markdown files
+        matches = []
+        for md_file in globmod.glob(os.path.join(VAULT_PATH, "**/*.md"), recursive=True):
+            # Skip memory/ subdirectory (that's the daemon's space)
+            rel = os.path.relpath(md_file, VAULT_PATH)
+            try:
+                with open(md_file, "r") as f:
+                    content = f.read()
+                if query.lower() in content.lower():
+                    # Extract matching lines with context
+                    lines = content.split("\n")
+                    snippets = []
+                    for i, line in enumerate(lines):
+                        if query.lower() in line.lower():
+                            start = max(0, i - 1)
+                            end = min(len(lines), i + 2)
+                            snippets.append("\n".join(lines[start:end]))
+                    matches.append({
+                        "file": rel,
+                        "snippets": snippets[:3],  # top 3 matches per file
+                    })
+            except Exception:
+                continue
+        return {"query": query, "matches": matches[:10]}
+
+    if not path:
+        # List vault structure
+        structure = {}
+        for md_file in sorted(globmod.glob(os.path.join(VAULT_PATH, "**/*.md"), recursive=True)):
+            rel = os.path.relpath(md_file, VAULT_PATH)
+            # Skip memory/ (daemon's space) for cleaner listing
+            if rel.startswith("memory/"):
+                continue
+            parts = rel.split("/")
+            d = structure
+            for p in parts[:-1]:
+                d = d.setdefault(p, {})
+            d[parts[-1]] = os.path.getsize(md_file)
+        return {"vault_path": VAULT_PATH, "structure": structure}
+
+    # Read specific file
+    full_path = os.path.join(VAULT_PATH, path)
+    if os.path.isdir(full_path):
+        files = []
+        for f in sorted(os.listdir(full_path)):
+            if f.endswith(".md"):
+                files.append(f)
+        return {"directory": path, "files": files}
+
+    if not os.path.exists(full_path):
+        return {"error": f"File not found: {path}"}
+
+    try:
+        with open(full_path, "r") as f:
+            content = f.read()
+        # Truncate very long files
+        if len(content) > 8000:
+            content = content[:8000] + "\n\n[... truncated, ask for specific section ...]"
+        return {"file": path, "content": content}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def vault_insight(topic: str, memory_bridge) -> dict:
+    """Cross-reference vault project context with conversation memories."""
+    import glob as globmod
+
+    result = {"topic": topic, "vault_context": [], "memory_context": []}
+
+    # 1. Search vault for relevant content
+    vault_hits = []
+    key_files = [
+        "HOME.md", "Roadmap.md", "Decision Log.md",
+        "Infrastructure Map.md",
+    ]
+    # Also scan active projects
+    projects_dir = os.path.join(VAULT_PATH, "projects", "active")
+    if os.path.isdir(projects_dir):
+        for f in os.listdir(projects_dir):
+            if f.endswith(".md"):
+                key_files.append(f"projects/active/{f}")
+
+    # Also scan domain docs
+    domain_dir = os.path.join(VAULT_PATH, "domain")
+    if os.path.isdir(domain_dir):
+        for root, dirs, files in os.walk(domain_dir):
+            for f in files:
+                if f.endswith(".md"):
+                    rel = os.path.relpath(os.path.join(root, f), VAULT_PATH)
+                    key_files.append(rel)
+
+    for rel_path in key_files:
+        full = os.path.join(VAULT_PATH, rel_path)
+        if not os.path.exists(full):
+            continue
+        try:
+            with open(full, "r") as f:
+                content = f.read()
+            if topic.lower() in content.lower() or any(
+                word.lower() in content.lower()
+                for word in topic.split() if len(word) > 3
+            ):
+                # Extract relevant sections
+                lines = content.split("\n")
+                relevant = []
+                for i, line in enumerate(lines):
+                    if any(word.lower() in line.lower() for word in topic.split() if len(word) > 3):
+                        start = max(0, i - 2)
+                        end = min(len(lines), i + 5)
+                        relevant.append("\n".join(lines[start:end]))
+                if relevant:
+                    vault_hits.append({
+                        "file": rel_path,
+                        "excerpts": relevant[:3],
+                    })
+        except Exception:
+            continue
+
+    result["vault_context"] = vault_hits[:5]
+
+    # 2. Search memories for the topic
+    if memory_bridge._started:
+        memories = memory_bridge.recall(topic, n_results=10)
+        result["memory_context"] = memories.get("results", [])
+        result["total_memories"] = memories.get("total_memories", 0)
+
+    # 3. Generate cross-references
+    vault_entities = set()
+    for hit in vault_hits:
+        for excerpt in hit.get("excerpts", []):
+            # Extract capitalized terms as potential entities
+            import re
+            for match in re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', excerpt):
+                if len(match) > 3:
+                    vault_entities.add(match)
+
+    memory_entities = set()
+    for mem in result.get("memory_context", []):
+        for ent in mem.get("entities", []):
+            memory_entities.add(ent)
+
+    # Find entities that appear in both vault and memory
+    overlap = vault_entities & memory_entities
+    if overlap:
+        result["cross_references"] = list(overlap)
+
+    return result
+
+
+# ── Playbook (Midas self-knowledge) ───────────────────────────────────────
+
+PLAYBOOK_PATH = "/Users/midas/Desktop/cowork/vault/midas/playbook.md"
+
+# Section markers in the playbook markdown
+_PLAYBOOK_SECTIONS = {
+    "scan_schedule": "## Scan Schedule",
+    "what_works": "## What Works",
+    "what_doesnt": "## What Doesn't Work",
+    "high_signal": "## High-Signal Sources",
+    "self_eval": "## Self-Eval",
+    "improvement_queue": "## Improvement Queue",
+    "lessons": "## Lessons Learned",
+}
+
+def playbook_tool(section: str, action: str, content: str = "") -> dict:
+    """Read or update the Midas playbook."""
+    if action == "read":
+        try:
+            with open(PLAYBOOK_PATH, "r") as f:
+                text = f.read()
+            if section == "full":
+                return {"playbook": text}
+            marker = _PLAYBOOK_SECTIONS.get(section)
+            if not marker:
+                return {"error": f"Unknown section: {section}. Valid: {list(_PLAYBOOK_SECTIONS.keys())}"}
+            # Extract section content between this header and the next ## or ---
+            idx = text.find(marker)
+            if idx == -1:
+                return {"error": f"Section '{marker}' not found in playbook"}
+            start = idx + len(marker)
+            # Find next section boundary
+            rest = text[start:]
+            end = len(rest)
+            for boundary in ["\n## ", "\n---"]:
+                pos = rest.find(boundary)
+                if pos != -1 and pos < end:
+                    end = pos
+            return {"section": section, "content": rest[:end].strip()}
+        except FileNotFoundError:
+            return {"error": "Playbook not found at " + PLAYBOOK_PATH}
+
+    if action in ("append", "replace"):
+        if not content:
+            return {"error": "content is required for append/replace"}
+        try:
+            with open(PLAYBOOK_PATH, "r") as f:
+                text = f.read()
+        except FileNotFoundError:
+            return {"error": "Playbook not found at " + PLAYBOOK_PATH}
+
+        marker = _PLAYBOOK_SECTIONS.get(section)
+        if not marker:
+            return {"error": f"Unknown section: {section}. Valid: {list(_PLAYBOOK_SECTIONS.keys())}"}
+
+        idx = text.find(marker)
+        if idx == -1:
+            return {"error": f"Section '{marker}' not found in playbook"}
+
+        start = idx + len(marker)
+        rest = text[start:]
+        end = len(rest)
+        for boundary in ["\n## ", "\n---"]:
+            pos = rest.find(boundary)
+            if pos != -1 and pos < end:
+                end = pos
+
+        old_section = rest[:end]
+        if action == "append":
+            new_section = old_section.rstrip() + "\n" + content + "\n"
+        else:  # replace
+            new_section = "\n" + content + "\n"
+
+        text = text[:start] + new_section + rest[end:]
+
+        # Update the "Last updated" line
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if "*Last updated:" in text:
+            import re
+            text = re.sub(r'\*Last updated:.*\*', f'*Last updated: {today} (auto)*', text)
+
+        with open(PLAYBOOK_PATH, "w") as f:
+            f.write(text)
+        return {"status": "updated", "section": section, "action": action}
+
+    return {"error": f"Unknown action: {action}. Use 'read', 'append', or 'replace'."}
+
 
 # ── Memory Daemon (subprocess over MCP stdio) ──────────────────────────────
 
@@ -400,6 +734,12 @@ def execute_tool(name: str, args: dict) -> str:
             result = browser.scan_x_feed(args.get("count", 5))
         elif name == "browse_tabs":
             result = {"tabs": browser.get_tabs()}
+        elif name == "playbook_update":
+            result = playbook_tool(args.get("section", "full"), args.get("action", "read"), args.get("content", ""))
+        elif name == "vault_read":
+            result = vault_read(args.get("path", ""), args.get("query", ""))
+        elif name == "vault_insight":
+            result = vault_insight(args.get("topic", ""), memory)
         elif name == "shell":
             cmd = args.get("command", "")
             try:
@@ -430,11 +770,20 @@ YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RESET = "\033[0m"
 
+def _count_files(d):
+    """Recursively count files in vault structure dict."""
+    for k, v in d.items():
+        if isinstance(v, dict):
+            yield from _count_files(v)
+        else:
+            yield k
+
 TOOL_ICONS = {
     "memory_ingest": "💾",
     "memory_recall": "🔍",
     "memory_stats": "📊",
     "memory_insights": "🧠",
+    "playbook_update": "📖",
     "browse_navigate": "🌐",
     "browse_read": "📄",
     "browse_click": "👆",
@@ -443,6 +792,8 @@ TOOL_ICONS = {
     "browse_search": "🔎",
     "browse_x_feed": "🐦",
     "browse_tabs": "📑",
+    "vault_read": "📖",
+    "vault_insight": "🔮",
     "shell": "⚡",
 }
 
@@ -496,6 +847,17 @@ def print_tool_call(name: str, args: dict):
         print(f"  {DIM}{icon} scanning X feed (top {count})...{RESET}")
     elif name == "browse_tabs":
         print(f"  {DIM}{icon} listing tabs{RESET}")
+    elif name == "vault_read":
+        path = args.get("path", "")
+        query = args.get("query", "")
+        if query:
+            print(f"  {DIM}{icon} vault search: {query}{RESET}")
+        elif path:
+            print(f"  {DIM}{icon} vault: {path}{RESET}")
+        else:
+            print(f"  {DIM}{icon} listing vault{RESET}")
+    elif name == "vault_insight":
+        print(f"  {DIM}{icon} cross-referencing: {args.get('topic', '')[:50]}{RESET}")
     elif name == "shell":
         print(f"  {DIM}{icon} $ {args.get('command', '')[:60]}{RESET}")
 
@@ -542,6 +904,23 @@ def print_tool_result(name: str, result: str):
     elif name.startswith("browse_") and isinstance(data, dict):
         status = data.get("status", data.get("error", "done"))
         print(f"  {DIM}  └─ {status}{RESET}")
+    elif name == "vault_read" and isinstance(data, dict):
+        if "matches" in data:
+            n = len(data["matches"])
+            print(f"  {DIM}  └─ {n} files matched{RESET}")
+        elif "structure" in data:
+            n = sum(1 for _ in _count_files(data["structure"]))
+            print(f"  {DIM}  └─ {n} files in vault{RESET}")
+        elif "content" in data:
+            lines = data["content"].count("\n")
+            print(f"  {DIM}  └─ {lines} lines{RESET}")
+        elif "files" in data:
+            print(f"  {DIM}  └─ {len(data['files'])} files{RESET}")
+    elif name == "vault_insight" and isinstance(data, dict):
+        v = len(data.get("vault_context", []))
+        m = len(data.get("memory_context", []))
+        xref = len(data.get("cross_references", []))
+        print(f"  {DIM}  └─ {v} vault hits, {m} memories, {xref} cross-refs{RESET}")
     elif name == "shell" and isinstance(data, dict):
         rc = data.get("returncode", "?")
         print(f"  {DIM}  └─ exit {rc}{RESET}")
@@ -639,7 +1018,8 @@ def run_agent():
                      "--user-data-dir=" + os.path.expanduser("~/.chrome-debug"),
                      "--no-first-run",
                      "--window-size=800,600",
-                     "--window-position=9999,9999"],
+                     "--window-position=9999,9999",
+                     "about:blank"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
@@ -651,6 +1031,13 @@ def run_agent():
         except Exception:
             pass
 
+    # Pre-connect browser so tab is ready for first tool call
+    if browser_online:
+        try:
+            browser.connect()
+        except Exception:
+            pass
+
     # Show banner
     print_banner(mem_count=stats['total_memories'], browser=browser_online, ane=ane_online)
 
@@ -659,8 +1046,21 @@ def run_agent():
     if browser_online:
         all_tools.extend(BROWSER_TOOLS)
 
+    # Load playbook — Midas's self-knowledge and improvement log
+    playbook_path = "/Users/midas/Desktop/cowork/vault/midas/playbook.md"
+    playbook_content = ""
+    try:
+        with open(playbook_path, "r") as f:
+            playbook_content = f.read()
+    except FileNotFoundError:
+        pass
+
+    system_with_playbook = SYSTEM_PROMPT
+    if playbook_content:
+        system_with_playbook += f"\n\n## PLAYBOOK (your self-knowledge — read, follow, and UPDATE after tasks)\n\nYou have a playbook at `{playbook_path}`. It contains your scan schedules, what works, what doesn't, self-eval metrics, and improvement queue. **Read it at boot (already loaded below). Update it via shell after completing autonomous tasks** — log what worked, what failed, update metrics, refine your approach.\n\nThis is how you get better across sessions. Every scan, every task, every failure teaches you something. Write it down.\n\n```\n{playbook_content}\n```"
+
     # Conversation state
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": system_with_playbook}]
 
     while True:
         # Get user input
