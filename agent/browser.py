@@ -53,10 +53,16 @@ class BrowserBridge:
         tabs = self._browser.list_tab()
         if tabs:
             self._tab = tabs[0]
-            self._tab.start()
         else:
-            self._tab = self._browser.new_tab()
-            self._tab.start()
+            # No tabs — create one with about:blank
+            self._tab = self._browser.new_tab(url="about:blank")
+            time.sleep(0.5)  # give tab time to initialize
+        self._tab.start()
+        # Enable Page domain for navigation events
+        try:
+            self._tab.Page.enable()
+        except Exception:
+            pass
         self._connected = True
 
     def _ensure_tab(self):
