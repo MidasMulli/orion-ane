@@ -103,12 +103,12 @@ The gradient `dL/d(logits)` has the same shape regardless of loss function — i
 
 ## Expected Impact on Speculative Decoding
 
-A distilled 0.6B model should:
-- **Higher acceptance rate** — Student's distribution closer to teacher → more drafted tokens accepted
-- **Same inference speed** — No architecture changes, same ANE kernel dispatch
-- **Net throughput gain** — More accepted tokens per speculation round × same draft speed
+A distilled 0.6B model was hypothesized to improve acceptance, but **MLX-based distillation experiments showed no meaningful improvement** (5.5% vs 6% baseline). The 0.6B model is likely too small to meaningfully align its output distribution with the 14B teacher.
 
-Current acceptance rate with pretrained 0.6B: ~48%. Target after distillation: 65-80%.
+- **Same inference speed** — No architecture changes, same ANE kernel dispatch
+- **Acceptance was not improved** — 0.6B capacity gap is too large regardless of training signal
+
+Current acceptance rate with pretrained 0.6B: ~6% (ANE) / ~48% (same-process GPU). ANE distillation requires a larger draft model (1.7B-4B) to see meaningful gains — feasible on 32GB hardware.
 
 ## File Structure
 

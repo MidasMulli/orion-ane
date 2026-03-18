@@ -39,8 +39,14 @@ VERSION = 1
 
 
 def load_training_data(path, vocab_size=151936):
-    """Load pretokenized training data (uint16 binary, same as train.m)."""
-    data = np.fromfile(path, dtype=np.uint16)
+    """Load pretokenized training data (uint16 or uint32 binary)."""
+    # Try uint32 first (Qwen3 vocab), fall back to uint16
+    data = np.fromfile(path, dtype=np.uint32)
+    if data.max() < 65536:
+        # Could be uint16 — check if uint16 interpretation makes more sense
+        data_u16 = np.fromfile(path, dtype=np.uint16)
+        if data_u16.max() < vocab_size:
+            data = data_u16
     print(f"  Loaded {len(data):,} tokens from {path}")
     # Validate token range
     max_tok = int(data.max())
@@ -86,6 +92,7 @@ def generate_teacher_logits(model, tokenizer, sequences, seq_len, top_k, batch_s
         # Forward pass through teacher
         x = mx.array(input_ids.reshape(1, -1))  # [1, seq_len]
         logits = model(x)  # [1, seq_len, vocab_size]
+        logits = logits.astype(mx.float32)  # ensure float32 for numpy conversion
         mx.eval(logits)
 
         logits_np = np.array(logits[0])  # [seq_len, vocab_size]

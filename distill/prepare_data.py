@@ -43,7 +43,7 @@ def tokenize_text_file(input_path, tokenizer, max_tokens=None):
         tokens = tokens[:max_tokens]
         print(f"  Truncated to {max_tokens:,} tokens")
 
-    return np.array(tokens, dtype=np.uint16)
+    return np.array(tokens, dtype=np.int32)
 
 
 def tokenize_hf_dataset(dataset_name, tokenizer, split="train", max_tokens=5_000_000,
@@ -82,17 +82,18 @@ def tokenize_hf_dataset(dataset_name, tokenizer, split="train", max_tokens=5_000
     elapsed = time.time() - t0
     print(f"  Done: {n_docs} docs, {len(all_tokens):,} tokens in {elapsed:.1f}s")
 
-    return np.array(all_tokens, dtype=np.uint16)
+    # Use int32 — Qwen3 token IDs exceed uint16 range (>65535)
+    return np.array(all_tokens, dtype=np.int32)
 
 
 def save_binary(tokens, output_path):
-    """Save tokens as flat uint16 binary (same format as train.m expects)."""
+    """Save tokens as flat binary (uint32 for Qwen3, uint16 for smaller vocabs)."""
     tokens.tofile(output_path)
     size_mb = os.path.getsize(output_path) / 1024 / 1024
-    print(f"  Saved {len(tokens):,} tokens to {output_path} ({size_mb:.1f} MB)")
+    print(f"  Saved {len(tokens):,} tokens to {output_path} ({size_mb:.1f} MB, {tokens.dtype})")
 
     # Verify
-    verify = np.fromfile(output_path, dtype=np.uint16)
+    verify = np.fromfile(output_path, dtype=tokens.dtype)
     assert len(verify) == len(tokens)
     assert np.array_equal(verify, tokens)
     print(f"  Verified: first 10 tokens = {verify[:10].tolist()}")
@@ -100,7 +101,12 @@ def save_binary(tokens, output_path):
 
 def verify_data(path, tokenizer=None):
     """Verify and inspect tokenized data file."""
-    tokens = np.fromfile(path, dtype=np.uint16)
+    # Auto-detect: try uint32 first (Qwen3), fall back to uint16
+    tokens = np.fromfile(path, dtype=np.uint32)
+    if tokens.max() < 65536:
+        tokens_u16 = np.fromfile(path, dtype=np.uint16)
+        if len(tokens_u16) == len(tokens) * 2:
+            tokens = tokens_u16  # was actually uint16
     size_mb = os.path.getsize(path) / 1024 / 1024
     unique = len(np.unique(tokens))
     print(f"  File: {path}")

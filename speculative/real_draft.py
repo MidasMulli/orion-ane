@@ -1,9 +1,12 @@
 """
-Real ANE Draft Model — Qwen3-0.6B running on Apple Neural Engine
-================================================================
+Real ANE Draft Model — Qwen3 models running on Apple Neural Engine
+==================================================================
 
-Loads real model weights, compiles 215 ANE kernels, and provides
+Loads real model weights, compiles ANE kernels, and provides
 token-level generation for speculative decoding.
+
+Supports any Qwen3 dense model (0.6B, 1.7B, 4B, 8B) — architecture
+is auto-detected from HuggingFace config.
 
 All linear projections execute on the Neural Engine via direct
 _ANEClient dispatch. CPU handles element-wise ops (RMSNorm, RoPE,
@@ -21,7 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from ane_draft import init_ane, lib, compile_ane_kernel, generate_conv_mil_with_weights
 
 # ── Constants ─────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen3-0.6B"
+DEFAULT_MODEL = "Qwen/Qwen3-0.6B"
 ROPE_THETA = 1000000.0
 ANE_SPATIAL = 16   # ANE minimum spatial dimension
 CLS_CHUNK = 16000  # Classifier tiling chunk size (was 8000 → fewer ANE dispatches)
@@ -29,9 +32,10 @@ MAX_SEQ = 64       # Maximum sequence length for KV cache
 
 
 class RealDraftModel:
-    """Full Qwen3-0.6B running on Apple Neural Engine."""
+    """Qwen3 model running on Apple Neural Engine. Supports 0.6B, 1.7B, 4B."""
 
-    def __init__(self):
+    def __init__(self, model_name=None):
+        self.model_name = model_name or DEFAULT_MODEL
         self.dim = 0
         self.n_heads = 0
         self.n_kv_heads = 0
@@ -59,72 +63,153 @@ class RealDraftModel:
         self._c_model = None
         self._c_lib = None
 
-    def load_and_compile(self, status_fn=None, fused=False):
+    def load_and_compile(self, status_fn=None, fused=False, weights_path=None):
         """Download model, extract weights, compile all ANE kernels.
-        If fused=True, compile fused QKV and Gate+Up kernels (fewer dispatches)."""
+        If fused=True, compile fused QKV and Gate+Up kernels (fewer dispatches).
+        If weights_path is set, load weights from local safetensors instead of HuggingFace."""
         self.fused = fused
         def status(msg):
             if status_fn:
                 status_fn(msg)
             print(f"  {msg}")
 
-        # ── Step 1: Download ──
-        status("Downloading Qwen3-0.6B...")
-        t0 = time.time()
+        if weights_path:
+            # ── Load from local safetensors ──
+            status(f"Loading weights from {weights_path}...")
+            t0 = time.time()
 
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        import torch
+            from safetensors.numpy import load_file
+            from transformers import AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, torch_dtype=torch.float32, trust_remote_code=True)
-        model.eval()
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
-        status(f"Model downloaded in {time.time()-t0:.1f}s")
+            sf_path = weights_path
+            if os.path.isdir(sf_path):
+                sf_path = os.path.join(sf_path, "model.safetensors")
+            state = load_file(sf_path)
 
-        # ── Step 2: Architecture ──
-        config = model.config
-        self.dim = config.hidden_size
-        self.n_heads = config.num_attention_heads
-        self.n_kv_heads = getattr(config, 'num_key_value_heads', self.n_heads)
-        self.head_dim = getattr(config, 'head_dim', self.dim // self.n_heads)
-        self.hidden_dim = config.intermediate_size
-        self.vocab_size = config.vocab_size
-        self.n_layers = config.num_hidden_layers
+            # Auto-detect architecture from HuggingFace config
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
+            self.dim = config.hidden_size
+            self.n_heads = config.num_attention_heads
+            self.n_kv_heads = getattr(config, 'num_key_value_heads', self.n_heads)
+            self.head_dim = getattr(config, 'head_dim', self.dim // self.n_heads)
+            self.hidden_dim = config.intermediate_size
+            self.vocab_size = config.vocab_size
+            self.n_layers = config.num_hidden_layers
 
-        status(f"Architecture: dim={self.dim}, heads={self.n_heads}, "
-               f"kv_heads={self.n_kv_heads}, head_dim={self.head_dim}, "
-               f"layers={self.n_layers}")
+            status(f"Loaded {len(state)} tensors from safetensors in {time.time()-t0:.1f}s")
+            status(f"Architecture: dim={self.dim}, heads={self.n_heads}, "
+                   f"kv_heads={self.n_kv_heads}, head_dim={self.head_dim}, "
+                   f"layers={self.n_layers}")
 
-        # ── Step 3: Extract weights ──
-        status("Extracting weights...")
-        state = model.state_dict()
+            self.embed_w = state['model.embed_tokens.weight']
+            self.final_norm_w = state['model.norm.weight']
+            # Handle tied embeddings (0.6B, 1.7B, 4B use tie_word_embeddings=true)
+            if 'lm_head.weight' in state:
+                lm_head_w = state['lm_head.weight']
+            else:
+                lm_head_w = self.embed_w  # Tied to embed_tokens
+        else:
+            # ── Step 1: Download safetensors directly (memory-efficient) ──
+            status(f"Downloading {self.model_name}...")
+            t0 = time.time()
 
-        self.embed_w = state['model.embed_tokens.weight'].numpy()
-        self.final_norm_w = state['model.norm.weight'].numpy()
-        lm_head_w = state['lm_head.weight'].numpy()
+            from transformers import AutoTokenizer, AutoConfig
+            from huggingface_hub import snapshot_download
+            from safetensors.numpy import load_file
+            import glob as globmod
+
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+
+            # Download model files (safetensors + config)
+            model_dir = snapshot_download(self.model_name)
+            status(f"Model downloaded in {time.time()-t0:.1f}s")
+
+            # ── Step 2: Architecture from config ──
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
+            self.dim = config.hidden_size
+            self.n_heads = config.num_attention_heads
+            self.n_kv_heads = getattr(config, 'num_key_value_heads', self.n_heads)
+            self.head_dim = getattr(config, 'head_dim', self.dim // self.n_heads)
+            self.hidden_dim = config.intermediate_size
+            self.vocab_size = config.vocab_size
+            self.n_layers = config.num_hidden_layers
+
+            status(f"Architecture: dim={self.dim}, heads={self.n_heads}, "
+                   f"kv_heads={self.n_kv_heads}, head_dim={self.head_dim}, "
+                   f"layers={self.n_layers}")
+
+            # ── Step 3: Load weights from safetensors ──
+            # Use torch loader for bfloat16 support, then convert to numpy fp32
+            status("Loading safetensors weights...")
+            try:
+                from safetensors.numpy import load_file
+                sf_files = sorted(globmod.glob(os.path.join(model_dir, "*.safetensors")))
+                if not sf_files:
+                    status("FATAL: No safetensors files found")
+                    return False
+                state = {}
+                for sf in sf_files:
+                    state.update(load_file(sf))
+            except TypeError:
+                # bfloat16 not supported by numpy — fall back to torch loader
+                import torch
+                from safetensors.torch import load_file as torch_load_file
+                sf_files = sorted(globmod.glob(os.path.join(model_dir, "*.safetensors")))
+                if not sf_files:
+                    status("FATAL: No safetensors files found")
+                    return False
+                state = {}
+                for sf in sf_files:
+                    shard = torch_load_file(sf)
+                    # Convert to numpy fp32 immediately to free torch tensors
+                    for k, v in shard.items():
+                        state[k] = v.float().numpy()
+                    del shard
+            status(f"Loaded {len(state)} tensors from {len(sf_files)} safetensors file(s)")
+
+            self.embed_w = state['model.embed_tokens.weight']
+            self.final_norm_w = state['model.norm.weight']
+            # Handle tied embeddings (0.6B, 1.7B, 4B use tie_word_embeddings=true)
+            if 'lm_head.weight' in state:
+                lm_head_w = state['lm_head.weight']
+            else:
+                lm_head_w = self.embed_w  # Tied to embed_tokens
+
+        # Ensure embed/norm weights are fp32 (safetensors may store as fp16)
+        self.embed_w = np.array(self.embed_w, dtype=np.float32)
+        self.final_norm_w = np.array(self.final_norm_w, dtype=np.float32)
+        lm_head_w = np.array(lm_head_w, dtype=np.float32)
+
+        # Helper: convert to fp32 numpy whether torch tensor, numpy fp16, or fp32
+        def to_np(x):
+            if hasattr(x, 'numpy'):
+                x = x.numpy()
+            return np.array(x, dtype=np.float32)
 
         self.layer_weights = []
         for l in range(self.n_layers):
             prefix = f'model.layers.{l}'
             lw = {
-                'q': state[f'{prefix}.self_attn.q_proj.weight'].numpy(),
-                'k': state[f'{prefix}.self_attn.k_proj.weight'].numpy(),
-                'v': state[f'{prefix}.self_attn.v_proj.weight'].numpy(),
-                'o': state[f'{prefix}.self_attn.o_proj.weight'].numpy(),
-                'gate': state[f'{prefix}.mlp.gate_proj.weight'].numpy(),
-                'up': state[f'{prefix}.mlp.up_proj.weight'].numpy(),
-                'down': state[f'{prefix}.mlp.down_proj.weight'].numpy(),
-                'attn_norm': state[f'{prefix}.input_layernorm.weight'].numpy(),
-                'ffn_norm': state[f'{prefix}.post_attention_layernorm.weight'].numpy(),
-                'q_norm': state[f'{prefix}.self_attn.q_norm.weight'].numpy(),
-                'k_norm': state[f'{prefix}.self_attn.k_norm.weight'].numpy(),
+                'q': to_np(state[f'{prefix}.self_attn.q_proj.weight']),
+                'k': to_np(state[f'{prefix}.self_attn.k_proj.weight']),
+                'v': to_np(state[f'{prefix}.self_attn.v_proj.weight']),
+                'o': to_np(state[f'{prefix}.self_attn.o_proj.weight']),
+                'gate': to_np(state[f'{prefix}.mlp.gate_proj.weight']),
+                'up': to_np(state[f'{prefix}.mlp.up_proj.weight']),
+                'down': to_np(state[f'{prefix}.mlp.down_proj.weight']),
+                'attn_norm': to_np(state[f'{prefix}.input_layernorm.weight']),
+                'ffn_norm': to_np(state[f'{prefix}.post_attention_layernorm.weight']),
+                'q_norm': to_np(state[f'{prefix}.self_attn.q_norm.weight']),
+                'k_norm': to_np(state[f'{prefix}.self_attn.k_norm.weight']),
             }
             self.layer_weights.append(lw)
 
-        del model, state
+        del state
         import gc; gc.collect()
-        status("Weights extracted, PyTorch model freed")
+        status("Weights extracted")
 
         # ── Step 4: Init ANE ──
         if not init_ane():

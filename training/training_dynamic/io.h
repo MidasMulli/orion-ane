@@ -40,13 +40,38 @@ static void cvt_f16_f32(float *dst, const _Float16 *src, int n) {
     for (; i < n; i++) dst[i] = (float)src[i];
 }
 static void cvt_f32_f16(_Float16 *dst, const float *src, int n) {
+    // Clamp to fp16 representable range to prevent inf in ANE kernels
+    static const float fp16_max = 65504.0f;
+    float32x4_t vmax = vdupq_n_f32(fp16_max);
+    float32x4_t vmin = vdupq_n_f32(-fp16_max);
     int i = 0;
     for (; i+7 < n; i += 8) {
-        float16x8_t h = vcombine_f16(vcvt_f16_f32(vld1q_f32(src+i)),
-                                      vcvt_f16_f32(vld1q_f32(src+i+4)));
+        float32x4_t lo = vmaxq_f32(vminq_f32(vld1q_f32(src+i), vmax), vmin);
+        float32x4_t hi = vmaxq_f32(vminq_f32(vld1q_f32(src+i+4), vmax), vmin);
+        float16x8_t h = vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi));
         vst1q_f16((__fp16*)(dst+i), h);
     }
-    for (; i < n; i++) dst[i] = (_Float16)src[i];
+    for (; i < n; i++) {
+        float v = src[i];
+        if (v > fp16_max) v = fp16_max;
+        if (v < -fp16_max) v = -fp16_max;
+        dst[i] = (_Float16)v;
+    }
+}
+
+// Sanitize f32 buffer: replace NaN/Inf with 0, clamp to fp16 range.
+// Call this after reading ANE outputs to prevent backward pass explosion.
+static void sanitize_f32(float *data, int n) {
+    static const float fp16_max = 65504.0f;
+    float lo = -fp16_max, hi = fp16_max;
+    // Replace NaN/Inf with 0
+    for (int i = 0; i < n; i++) {
+        if (__builtin_expect(isnan(data[i]) || isinf(data[i]), 0)) {
+            data[i] = 0.0f;
+        }
+    }
+    // Clamp to fp16 range
+    vDSP_vclip(data, 1, &lo, &hi, data, 1, (vDSP_Length)n);
 }
 
 // IOSurface I/O (channel-first [C,S] layout, fp16 on surface)
