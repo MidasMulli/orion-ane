@@ -14,7 +14,7 @@ Mem0 stores facts. **Phantom thinks about them.**
 ┌─ ANE ── Enricher (classify, relate, analyze) ──────────┐  ~2W
 ```
 
-Three processors. Three loops. Near-zero contention (~3.8% measured). **[Full documentation →](memory/README.md)**
+Three processors. Three loops. GPU throughput within noise of baseline when daemon is running (measured ±2-3 tok/s on ~25 tok/s baseline). **[Full documentation →](memory/README.md)**
 
 ---
 

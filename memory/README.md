@@ -6,7 +6,7 @@ Zero-cost persistent memory for local LLMs — extraction, embedding, and a cont
 
 Every local LLM forgets. Phantom remembers — and it doesn't just store facts, it thinks about them. A continuous enrichment loop reclassifies, builds relationships, detects staleness, finds cross-entity patterns, and consolidates profiles. Your vault gets smarter while you sleep.
 
-Three processors. Three loops. Near-zero contention (~3.8% measured).
+Three processors. Three loops. GPU throughput within noise of baseline when daemon is running.
 
 ```
 ┌─ GPU ────────────────────────────────────┐
@@ -184,7 +184,7 @@ GPU inference measured with and without the memory daemon processing embeddings.
 | GPU + daemon (20 embeddings) | 25.4 | within noise |
 | GPU + daemon (100 embeddings) | 25.9 | within noise |
 
-~3.8% average interference measured across runs. The daemon runs on CPU efficiency cores while GPU handles inference. They share the memory bus but not compute resources.
+All concurrent measurements fall within the ±2-3 tok/s run-to-run variance of the baseline (~25 tok/s). The daemon runs on CPU efficiency cores while GPU handles inference. They share the memory bus but not compute resources. On a single-run basis, interference is indistinguishable from noise.
 
 ### Embedding throughput
 
