@@ -68,7 +68,7 @@ def main():
 
     # Import and boot the daemon with enricher
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from phantom_memory.daemon import MemoryDaemon
+    from daemon import MemoryDaemon
 
     daemon = MemoryDaemon(
         vault_path=VAULT_PATH,

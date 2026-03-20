@@ -1163,12 +1163,12 @@ def run_agent():
     sys.stderr = old_stderr
     logging.disable(logging.NOTSET)
 
-    # Check ANE status
+    # Check ANE status (server runs independently on port 8423)
     ane_online = False
     try:
-        if memory.daemon and hasattr(memory.daemon, '_ane_process') and memory.daemon._ane_process:
-            ane_online = True
-    except Exception:
+        req = urllib.request.urlopen("http://localhost:8423/health", timeout=2)
+        ane_online = req.status == 200
+    except (urllib.error.URLError, OSError):
         pass
 
     # Test LLM connection
