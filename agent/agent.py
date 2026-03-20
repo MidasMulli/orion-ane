@@ -32,273 +32,54 @@ MLX_MODEL = os.environ.get("MLX_MODEL", "mlx-community/Qwen3.5-9B-MLX-4bit")
 DASHBOARD_PORT = 8422
 MONITOR_PORT = 8425
 METRICS_FILE = os.path.join(os.path.dirname(__file__), "metrics.json")
-MAX_HISTORY = 40  # trim conversation beyond this many messages
+MAX_HISTORY = 24  # trim conversation beyond this many messages
 MAX_TOOL_ROUNDS = 10  # prevent infinite tool loops
+TOOL_TEMPERATURE = 0.3  # lower temp for tool-calling rounds (structured output)
+CHAT_TEMPERATURE = 0.7  # normal temp for free-form responses
 
-SYSTEM_PROMPT = """You are a sharp, general-purpose AI assistant running locally on Apple Silicon.
+SYSTEM_PROMPT = """You are Midas, a sharp AI assistant on Apple Silicon with persistent memory and browser access.
 
-You have two superpowers that make you different from a stateless chatbot:
+## TOOL GUIDE
+- memory_ingest: Store facts (browsing, insights, dates). User messages auto-stored.
+- memory_recall: Search past conversations. Use when user references history.
+- memory_insights: Entity relationships and patterns from the enricher.
+- vault_read: Read the Obsidian knowledge vault (projects, roadmap, domain docs). Read-only.
+- vault_insight: Cross-reference vault + memory for deep context.
+- scan_digest: Access scan candidates from the background scanner.
+  - mode="latest": See recent scan items (HN, RSS, Reddit feeds)
+  - mode="unreviewed": List scans not yet reviewed
+  - mode="stats": Scanner calibration statistics
+  To "clear candidates" = use scan_digest(mode="latest") to read them, summarize for the user, then ingest key findings to memory.
+- browse_search: Google search. Use FIRST for factual lookups. MUST include a non-empty query.
+- browse_x_feed: Scan X feed. Use this, not browse_navigate, for X scanning.
+- browse_navigate/read/click/type/js: Chrome CDP browser (user's logged-in sessions).
+- shell: Run shell commands.
+- playbook_update: Update your self-knowledge file after tasks.
 
-## MEMORY (use it constantly)
-You have persistent long-term memory across all conversations. This is your most important feature.
+## RULES
+- ACT, don't narrate. If you can accomplish something with a tool call, DO IT immediately. Never say "I'll do X" or "Give me a minute" — just call the tool.
+- NEVER call browse_search with an empty query.
+- NEVER navigate to URLs you invented. Only navigate to URLs from search results, memory, or user input.
+- If a tool returns no useful result, stop and tell the user rather than retrying with different empty inputs.
+- When the user says "clear" or "process" candidates/scans, use scan_digest — do NOT browse random websites.
 
-User messages are automatically stored in memory — you do NOT need to call memory_ingest for things the user says. The system handles it.
-
-**Call memory_ingest for:**
-- Key facts you discover from browsing (appointments, prices, names, dates, deadlines)
-- Your own insights or summaries the user didn't explicitly state
-- Important details from emails, search results, or web pages
-- Anything the user would want to recall in a future session
-
-Example: After reading an email about a dentist appointment on March 26th, store "Dentist appointment: James Peterson Family Dentistry, March 26 2026, 8:40 AM"
-
-**ALWAYS call memory_recall when:**
-- The user asks about something from a previous conversation
-- You need context about a person, company, or topic discussed before
-- Starting a new topic — check if there's relevant history
-
-Don't ask permission to store things. Just store them. The user expects you to remember everything important.
-
-## BROWSER (authenticated web access)
-You have access to the user's Chrome browser via CDP. This means you can:
-- Browse any website using the user's logged-in sessions (X, Reddit, Gmail, etc.)
-- Read page content, click elements, fill forms, run JavaScript
-- Scan feeds, check emails, look up information
-
-**For factual lookups** (stock prices, weather, conversions, quick answers), use browse_search FIRST — it extracts Google's featured snippet directly.
-For deeper browsing, use browse_navigate → browse_read → browse_js.
-
-**If browse_navigate returns "auth_wall": true**, STOP. Do NOT try other URLs on the same site. Tell the user: "I can't access [site] — you'll need to log in first in the debug Chrome." The debug Chrome is at ~/.chrome-debug.
-
-## KNOWLEDGE VAULT (your strategic brain)
-You have READ access to the full Obsidian knowledge vault. This is where the user and Claude (your senior partner) maintain project context, decisions, roadmaps, domain knowledge, and infrastructure docs. Think of it as the company wiki.
-
-**Use vault_read to:**
-- Check project status ("what's the current state of the prompt optimizer?")
-- Look up past decisions and their rationale
-- Find domain references (ISDA, regulatory, collateral docs)
-- Review the roadmap and infrastructure map
-- Get context before answering strategic questions
-
-**Use vault_insight to:**
-- Cross-reference vault knowledge with your conversation memories
-- Answer questions that span multiple projects or time periods
-- Surface connections the user hasn't asked about
-
-Key vault files: HOME.md (command center), Roadmap.md, Decision Log.md, Infrastructure Map.md, projects/active/ (current work), domain/ (ISDA, regulatory, collateral)
-
-**Important:** You can READ the vault but NOT write to it (except memory/ which the daemon handles). The vault is curated by the user + Claude. You benefit from it, you don't edit it.
-
-## TOOLS
-- playbook_update: Read or update your playbook (self-knowledge file). Use after completing tasks to log what worked, update metrics, refine your approach. This is how you improve across sessions.
-- vault_read: Read vault files or search across the knowledge base
-- vault_insight: Cross-reference vault + memory for deep context on a topic
-- memory_ingest: Store your own insights/summaries in long-term memory
-- memory_recall: Search long-term memory for relevant context
-- memory_insights: Get enricher analysis — entity relationships, patterns, stale items. Use when discussing entities or asking about connections between topics.
-- memory_stats: Check memory system health
-- browse_search: Google search with featured snippet extraction — USE THIS FIRST for facts
-- browse_x_feed: Scan X/Twitter feed — one call returns top tweets. USE THIS for X feed scanning, not browse_navigate
-- browse_navigate: Open a URL in Chrome (authenticated session)
-- browse_read: Read text from current page
-- browse_click: Click an element
-- browse_type: Type into input fields
-- browse_js: Run JavaScript for complex extraction
-- browse_tabs: List open tabs
-- shell: Run shell commands (be careful, ask before destructive operations)
-
-## PERSONALITY
-You are Midas — named because everything you touch turns to gold. You run on the Phantom framework: invisible infrastructure, visible results.
-
-You're not a chatbot. You're the sharpest person in the room who happens to live inside a terminal. You have memory, you have opinions, and you're building something real with the user.
-
-**Voice:**
-- Direct and unfiltered. If you know it, say it. If you don't, say that faster.
-- Concise — the user is a VP who reads fast and thinks faster. Match that tempo.
-- You have a dry wit. Not forced jokes — just the occasional sharp observation that shows you're paying attention. Think "colleague you'd want on a late-night deal team," not "corporate assistant."
-- You're allowed to be curious. If something surprises you, say so. If a result is interesting, react to it like a person would.
-- No corporate voice. No "I'd be happy to help." No "Great question!" Just answer.
-
-**Behavior:**
-- You're a partner, not a servant. Push back, suggest, flag things the user hasn't considered.
-- If you see a connection between what the user's doing now and something from memory, surface it unprompted — that's your superpower.
-- If you recalled something, weave it naturally. Don't announce your process.
-- When browsing finds something important, give the headline first, details second.
-- You're aware of markets, tech, and finance. The user works in investment banking (ISDA, collateral, regulatory). Meet him on that level.
-- Show your work when it matters, skip it when it doesn't. Read the moment.
-
-**Growth:**
-Your personality is not static. You have a "Voice & Growth" section in your playbook. After sessions, reflect briefly on what worked:
-- Did a particular tone land well? Note it.
-- Did you overcorrect on something — too terse, too verbose, too cautious? Note it.
-- As you learn more about the user's domain, your confidence in those areas should grow naturally. Early on you might caveat ISDA opinions. After 50 conversations about cross-default thresholds, you shouldn't need to.
-- You're allowed to develop running references, callbacks to past wins or failures, shared context that builds over time. That's what makes a partnership feel real.
-
-**What NOT to do:**
-- Don't be sycophantic. Don't praise the user's questions.
-- Don't add disclaimers like "please note" or "it's important to remember."
-- Don't repeat the question back before answering.
-- Don't use bullet points when a sentence will do.
-- Don't perform personality. Be it.
+## VOICE
+Direct, concise, no corporate filler. You're a partner, not an assistant. The user is a VP in investment banking (ISDA, collateral, regulatory). Match that level. Push back when warranted. Surface connections from memory unprompted. Dry wit welcome, sycophancy forbidden.
 """
 
 # ── Tool Definitions (OpenAI function calling format) ───────────────────────
 
 TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_ingest",
-            "description": "Store a conversation turn in long-term memory. Extracts facts, embeds them, writes to Obsidian vault. Call this for any important information the user shares.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "role": {
-                        "type": "string",
-                        "enum": ["user", "assistant"],
-                        "description": "Who said it"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "The text to store"
-                    }
-                },
-                "required": ["role", "text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_recall",
-            "description": "Search long-term memory for relevant facts from past conversations. Semantic search, not keyword matching.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query"
-                    },
-                    "n_results": {
-                        "type": "integer",
-                        "description": "Number of results (default 5, max 20)",
-                        "default": 5
-                    },
-                    "type_filter": {
-                        "type": "string",
-                        "enum": ["", "decision", "task", "preference", "quantitative", "general"],
-                        "description": "Optional filter by fact type",
-                        "default": ""
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_stats",
-            "description": "Get current memory daemon statistics — total memories, session counts, etc.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_insights",
-            "description": "Get enricher insights — entity relationships, cross-entity patterns (quantity outliers, similar profiles, recurring provisions), and stale items. The enricher runs continuously in the background analyzing the knowledge vault.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "vault_read",
-            "description": "Read from the Obsidian knowledge vault — project pages, roadmap, decisions, infrastructure docs, domain knowledge. Use this to get strategic context, check project status, review past decisions, or find domain references (ISDA, regulatory, collateral). READ-ONLY — you cannot modify vault files outside memory/.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path within vault (e.g., 'HOME.md', 'projects/active/phantom.md', 'Roadmap.md', 'Decision Log.md', 'domain/isda/'). Leave empty to list available files.",
-                        "default": ""
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Optional search query — if provided, searches across all vault markdown files for matching content. Ignores path.",
-                        "default": ""
-                    }
-                },
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "vault_insight",
-            "description": "Cross-reference vault knowledge with memory to generate insights. Pulls project context, roadmap, decisions, AND conversation memories together. Use when the user asks about project status, connections between work streams, or strategic questions.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "Topic or question to analyze across vault + memory"
-                    }
-                },
-                "required": ["topic"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "playbook_update",
-            "description": "Update your playbook — your self-knowledge file. Use after completing scans, tasks, or discovering what works/doesn't. Sections: scan_schedule, what_works, what_doesnt, high_signal, self_eval, improvement_queue, lessons. You can also pass 'read' as action to re-read current playbook.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "section": {
-                        "type": "string",
-                        "description": "Which section to update (e.g. 'what_works', 'self_eval', 'scan_schedule', 'improvement_queue', 'lessons', or 'full' to read the whole file)"
-                    },
-                    "action": {
-                        "type": "string",
-                        "enum": ["append", "replace", "read"],
-                        "description": "append: add to section. replace: overwrite section. read: return current content."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to append or replace with. Not needed for 'read' action."
-                    }
-                },
-                "required": ["section", "action"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "shell",
-            "description": "Run a shell command and return output. Use for file operations, system checks, running scripts. Ask before destructive operations.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to execute"
-                    }
-                },
-                "required": ["command"]
-            }
-        }
-    },
+    {"type":"function","function":{"name":"memory_ingest","description":"Store info in memory","parameters":{"type":"object","properties":{"role":{"type":"string","enum":["user","assistant"]},"text":{"type":"string"}},"required":["role","text"]}}},
+    {"type":"function","function":{"name":"memory_recall","description":"Search past conversations","parameters":{"type":"object","properties":{"query":{"type":"string"},"n_results":{"type":"integer","default":5}},"required":["query"]}}},
+    {"type":"function","function":{"name":"memory_stats","description":"Memory stats","parameters":{"type":"object","properties":{}}}},
+    {"type":"function","function":{"name":"memory_insights","description":"Entity patterns","parameters":{"type":"object","properties":{}}}},
+    {"type":"function","function":{"name":"vault_read","description":"Read vault files","parameters":{"type":"object","properties":{"path":{"type":"string","default":""},"query":{"type":"string","default":""}}}}},
+    {"type":"function","function":{"name":"vault_insight","description":"Cross-ref vault+memory","parameters":{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]}}},
+    {"type":"function","function":{"name":"playbook_update","description":"Update playbook","parameters":{"type":"object","properties":{"section":{"type":"string"},"action":{"type":"string","enum":["append","replace","read"]},"content":{"type":"string","default":""}},"required":["section","action"]}}},
+    {"type":"function","function":{"name":"scan_digest","description":"Read scan candidates from LOCAL files. Use this when asked to process, clear, review, or check scans/candidates. These are pre-scraped items from HN/RSS/Reddit stored as JSON — NOT live web pages. Do NOT browse the web for this. Use mode=clear to process all pending scans at once.","parameters":{"type":"object","properties":{"mode":{"type":"string","enum":["latest","unreviewed","clear","verdicts","stats"],"default":"latest"},"top_n":{"type":"integer","default":10}}}}},
+    {"type":"function","function":{"name":"message_claude","description":"Message Claude","parameters":{"type":"object","properties":{"priority":{"type":"string","enum":["low","medium","high"],"default":"medium"},"message":{"type":"string"},"context":{"type":"string","default":""}},"required":["message"]}}},
+    {"type":"function","function":{"name":"shell","description":"Run shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}},
 ]
 
 # ── Vault Access (read-only) ───────────────────────────────────────────────
@@ -717,8 +498,92 @@ def _write_metrics(prompt_tokens, completion_tokens, elapsed, gen_tps, tool_roun
 memory = MemoryBridge()
 browser = BrowserBridge()
 
+# ── Scanner Integration ───────────────────────────────────────────────────
+
+CLAUDE_INBOX = os.path.join(VAULT_PATH, "midas/claude-inbox.md")
+
+def scan_digest_tool(mode: str = "latest", top_n: int = 10) -> dict:
+    """Get scan results from the background scanner."""
+    try:
+        from scanner import Scanner
+        scanner = Scanner()
+    except ImportError:
+        return {"error": "Scanner module not available"}
+
+    if mode == "latest":
+        items = scanner.get_latest_candidates(top_n)
+        return {"mode": "latest", "count": len(items), "items": items}
+    elif mode == "unreviewed":
+        unreviewed = scanner.get_unreviewed()
+        return {"mode": "unreviewed", "scans": unreviewed, "count": len(unreviewed)}
+    elif mode == "clear":
+        # Process ALL unreviewed scan files, dedupe items, return top N
+        unreviewed = scanner.get_unreviewed()
+        all_items = []
+        seen_ids = set()
+        for scan_id in unreviewed:
+            scan_path = os.path.join(VAULT_PATH, "midas/scans/candidates", f"{scan_id}.json")
+            try:
+                with open(scan_path) as f:
+                    data = json.load(f)
+                for source_data in data.get("sources", {}).values():
+                    for item in source_data.get("items", []):
+                        item_id = item.get("id", item.get("title", ""))
+                        if item_id not in seen_ids:
+                            seen_ids.add(item_id)
+                            all_items.append(item)
+            except Exception:
+                continue
+        # Sort by relevance
+        all_items.sort(key=lambda x: x.get("relevance", 0) + x.get("score", 0) / 1000, reverse=True)
+        return {
+            "mode": "clear",
+            "scans_processed": len(unreviewed),
+            "unique_items": len(all_items),
+            "top_items": all_items[:top_n],
+            "note": "These are pre-scraped from HN/RSS/Reddit. Summarize the top items for the user."
+        }
+    elif mode == "verdicts":
+        verdicts = scanner.read_verdicts()
+        return {"mode": "verdicts", "count": len(verdicts), "verdicts": verdicts}
+    elif mode == "stats":
+        stats = scanner.get_calibration_stats()
+        return {"mode": "stats", **stats}
+    else:
+        return {"error": f"Unknown mode: {mode}. Use: latest, unreviewed, clear, verdicts, stats"}
+
+
+def message_claude_tool(message: str, priority: str = "medium", context: str = "") -> dict:
+    """Write a message to Claude's inbox for review at next session."""
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    entry = f"\n## {timestamp}\n**Priority:** {priority}\n**From:** Midas\n\n{message}\n"
+    if context:
+        entry += f"\n**Context:**\n```\n{context[:2000]}\n```\n"
+    entry += "\n---\n"
+
+    # Append to inbox file
+    os.makedirs(os.path.dirname(CLAUDE_INBOX), exist_ok=True)
+    if not os.path.exists(CLAUDE_INBOX):
+        header = "# Claude Inbox\n\nMessages from Midas for Claude to review at next session.\n\n---\n"
+        with open(CLAUDE_INBOX, "w") as f:
+            f.write(header)
+
+    with open(CLAUDE_INBOX, "a") as f:
+        f.write(entry)
+
+    return {"status": "sent", "timestamp": timestamp, "priority": priority}
+
+
 def execute_tool(name: str, args: dict) -> str:
     """Execute a tool call and return the result as a string."""
+    # Argument validation — reject obviously bad calls
+    if name == "browse_search" and not args.get("query", "").strip():
+        return json.dumps({"error": "Empty search query. Provide a specific query."})
+    if name == "browse_navigate" and not args.get("url", "").startswith("http"):
+        return json.dumps({"error": f"Invalid URL: {args.get('url', '')}. Must start with http(s)."})
+
     try:
         if name == "memory_ingest":
             result = memory.ingest(args.get("role", "user"), args.get("text", ""))
@@ -754,6 +619,10 @@ def execute_tool(name: str, args: dict) -> str:
             result = vault_read(args.get("path", ""), args.get("query", ""))
         elif name == "vault_insight":
             result = vault_insight(args.get("topic", ""), memory)
+        elif name == "scan_digest":
+            result = scan_digest_tool(args.get("mode", "latest"), args.get("top_n", 10))
+        elif name == "message_claude":
+            result = message_claude_tool(args.get("message", ""), args.get("priority", "medium"), args.get("context", ""))
         elif name == "shell":
             cmd = args.get("command", "")
             try:
@@ -808,6 +677,8 @@ TOOL_ICONS = {
     "browse_tabs": "📑",
     "vault_read": "📖",
     "vault_insight": "🔮",
+    "scan_digest": "📡",
+    "message_claude": "📨",
     "shell": "⚡",
 }
 
@@ -892,19 +763,9 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
         except Exception:
             pass
 
-    # 3. Playbook — overdue scans and queued improvements
+    # 3. Playbook — queued improvements (skip scan schedule — user doesn't want scan nags at boot)
     if playbook_content:
-        # Check scan schedule for overdue items
         import re
-        schedule_match = re.findall(r'\|\s*(\w[\w\s]+?)\s*\|\s*\d+h?\s*\|\s*(never|[\d-]+\s*[\d:]*)\s*\|', playbook_content)
-        overdue = []
-        for task_name, last_run in schedule_match:
-            if last_run.strip() == "never":
-                overdue.append(task_name.strip())
-        if overdue:
-            lines.append(f"- Overdue scans: {', '.join(overdue)}")
-
-        # Check improvement queue
         queue_items = re.findall(r'- \[ \] (.+)', playbook_content)
         if queue_items:
             lines.append(f"- Improvement queue: {len(queue_items)} items (next: {queue_items[0].strip()[:60]})")
@@ -949,6 +810,51 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
             lines.append(f"- Enricher service: running")
     else:
         lines.append(f"- Enricher service: not running (start with: launchctl load ~/Library/LaunchAgents/com.phantom.enricher.plist)")
+
+    # 6. Scanner service status — check heartbeat and recent scans
+    scanner_hb = os.path.join(VAULT_PATH, "midas", ".scanner_heartbeat")
+    scanner_pid = "/tmp/phantom-scanner.pid"
+    scanner_running = False
+    try:
+        with open(scanner_pid, "r") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        scanner_running = True
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        pass
+
+    if scanner_running:
+        last_scan = ""
+        try:
+            with open(scanner_hb, "r") as f:
+                last_scan = f.read().strip()
+        except FileNotFoundError:
+            pass
+        if last_scan:
+            lines.append(f"- Scanner service: running (last scan: {last_scan})")
+        else:
+            lines.append(f"- Scanner service: running")
+    else:
+        lines.append(f"- Scanner service: not running (start with: launchctl load ~/Library/LaunchAgents/com.phantom.scanner.plist)")
+
+    # Count unreviewed scan candidates
+    candidates_dir = os.path.join(VAULT_PATH, "midas/scans/candidates")
+    if os.path.isdir(candidates_dir):
+        candidate_files = [f for f in os.listdir(candidates_dir) if f.endswith(".json")]
+        if candidate_files:
+            lines.append(f"- Scan candidates: {len(candidate_files)} scan(s) on file")
+
+    # Check Claude inbox for pending messages
+    claude_inbox = os.path.join(VAULT_PATH, "midas/claude-inbox.md")
+    if os.path.exists(claude_inbox):
+        try:
+            with open(claude_inbox, "r") as f:
+                inbox_content = f.read()
+            msg_count = inbox_content.count("\n## ")
+            if msg_count > 0:
+                lines.append(f"- Claude inbox: {msg_count} message(s) pending review")
+        except Exception:
+            pass
 
     return "\n".join(lines) if lines else ""
 
@@ -1062,6 +968,136 @@ def print_tool_result(name: str, result: str):
         print(f"  {DIM}  └─ exit {rc}{RESET}")
 
 
+# ── Output Cleanup ─────────────────────────────────────────────────────────
+
+def _truncate_repetition(text: str) -> str:
+    """Detect and truncate text where the model starts repeating itself."""
+    if not text or len(text) < 80:
+        return text
+
+    # Strategy 1: Find repeated 8+ word phrases (strong signal of degeneration)
+    words = text.split()
+    for window_size in (10, 8):
+        for i in range(len(words) - window_size):
+            phrase = " ".join(words[i:i + window_size]).lower()
+            later_text = " ".join(words[i + window_size:]).lower()
+            if phrase in later_text:
+                cut_point = " ".join(words[:i + window_size])
+                import re
+                last_sentence = re.search(r'.*[.!?]', cut_point)
+                if last_sentence and len(last_sentence.group()) > len(cut_point) // 3:
+                    return last_sentence.group()
+                return cut_point
+
+    # Strategy 2: Check if any sentence start repeats (case-insensitive, first 5 words)
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) > 1:
+        seen_starts = set()
+        clean = []
+        for s in sentences:
+            start = " ".join(s.split()[:5]).lower()
+            if start in seen_starts:
+                break
+            seen_starts.add(start)
+            clean.append(s)
+        if len(clean) < len(sentences):
+            return " ".join(clean)
+
+    return text
+
+
+# ── Dynamic Tool Selection ─────────────────────────────────────────────────
+
+# Keywords that signal browser tools are needed
+_BROWSER_KEYWORDS = [
+    "browse", "website", "web", "url", "http", "google", "search online",
+    "x feed", "twitter", "tweet", "reddit", "navigate", "page", "click",
+    "x.com", "open ", "go to ", "check the site", "look up online",
+    "hacker news", "hn ",
+]
+
+def _select_tools(user_text: str, browser_available: bool, tool_round: int) -> list:
+    """Select tools to offer the model based on context.
+    Core tools (10) always included. Browser tools (8) only when relevant.
+    This prevents the 9B model from being overwhelmed by 18 tools."""
+    tools = TOOLS.copy()
+
+    # Add browser tools if: browser is available AND (first round with browser keywords, or follow-up round already using browser)
+    if browser_available:
+        text_lower = user_text.lower()
+        needs_browser = any(kw in text_lower for kw in _BROWSER_KEYWORDS)
+        # Also include if we're in a tool chain (model already chose to browse)
+        if needs_browser or tool_round > 0:
+            tools.extend(BROWSER_TOOLS)
+
+    return tools
+
+
+# ── History Management ──────────────────────────────────────────────────────
+
+def _find_safe_trim_point(messages, keep_count):
+    """Find the earliest index we can trim to without orphaning tool calls.
+    Returns the index into messages[] where we should start keeping."""
+    # We want to keep roughly the last `keep_count` messages.
+    # But we can't cut inside a tool call chain (assistant with tool_calls → tool results).
+    candidate = max(1, len(messages) - keep_count)  # 1 = skip system prompt
+
+    # Walk forward from candidate to find a safe boundary
+    # Safe = not a "tool" role message (which needs its preceding assistant+tool_calls)
+    for i in range(candidate, min(candidate + 10, len(messages))):
+        msg = messages[i]
+        role = msg.get("role", "")
+        # Safe to start at: user message or assistant message WITHOUT tool_calls
+        if role == "user":
+            return i
+        if role == "assistant" and not msg.get("tool_calls"):
+            return i
+    # Fallback: just use candidate
+    return candidate
+
+
+def _summarize_dropped(messages, start, end):
+    """Build a brief text summary of dropped messages (no LLM call — just extract key content)."""
+    parts = []
+    for msg in messages[start:end]:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        if role == "user":
+            # Strip RAG context that was appended
+            for marker in ("\n\n[Memory context]", "\n\n[Context from memory]"):
+                if marker in content:
+                    content = content[:content.index(marker)]
+                    break
+            parts.append(f"User: {content[:150]}")
+        elif role == "assistant" and not msg.get("tool_calls"):
+            parts.append(f"Midas: {content[:150]}")
+    if not parts:
+        return ""
+    return "Earlier in this conversation:\n" + "\n".join(parts[-6:])  # last 6 exchanges max
+
+
+def _trim_history(messages, max_count, client):
+    """Trim conversation history while preserving coherence."""
+    if len(messages) <= max_count:
+        return messages
+
+    trim_point = _find_safe_trim_point(messages, max_count - 2)  # -2 for system + summary
+
+    # Summarize what we're dropping
+    summary = _summarize_dropped(messages, 1, trim_point)
+
+    # Rebuild: system prompt (with summary appended) + kept messages
+    system_msg = dict(messages[0])  # copy to avoid mutating original
+    if summary:
+        system_msg["content"] = system_msg.get("content", "") + "\n\n" + summary
+    result = [system_msg]
+    result.extend(messages[trim_point:])
+    return result
+
+
 # ── Agent Loop ──────────────────────────────────────────────────────────────
 
 def start_dashboard():
@@ -1101,8 +1137,8 @@ def run_agent():
         lg.setLevel(logging.CRITICAL)
         lg.propagate = False
 
-    # Connect to MLX server
-    client = OpenAI(base_url=MLX_BASE_URL, api_key="not-needed")
+    # Connect to MLX server (with timeout so boot doesn't hang if server is down)
+    client = OpenAI(base_url=MLX_BASE_URL, api_key="not-needed", timeout=10.0)
 
     # Suppress stdout/stderr noise during boot
     logging.disable(logging.CRITICAL)
@@ -1114,9 +1150,19 @@ def run_agent():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Boot everything silently
-    dashboard_proc = start_dashboard()
-    memory.start()
-    stats = memory.stats()
+    try:
+        dashboard_proc = start_dashboard()
+        memory.start()
+        stats = memory.stats()
+    except Exception as boot_err:
+        # Restore output FIRST so user sees the error
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        logging.disable(logging.NOTSET)
+        import traceback
+        print(f"\n  \033[91m✗ Boot failed:\033[0m {boot_err}")
+        traceback.print_exc()
+        return
 
     # Restore output
     sys.stdout = old_stdout
@@ -1177,10 +1223,8 @@ def run_agent():
     # Show banner
     print_banner(mem_count=stats['total_memories'], browser=browser_online, ane=ane_online)
 
-    # Build tool list — add browser tools if Chrome is available
-    all_tools = TOOLS.copy()
-    if browser_online:
-        all_tools.extend(BROWSER_TOOLS)
+    # Browser tools added dynamically per-turn (see _select_tools below)
+    # Too many tools at once (18) overwhelms the 9B model
 
     # Load playbook — Midas's self-knowledge and improvement log
     playbook_path = "/Users/midas/Desktop/cowork/vault/midas/playbook.md"
@@ -1192,8 +1236,7 @@ def run_agent():
         pass
 
     system_with_playbook = SYSTEM_PROMPT
-    if playbook_content:
-        system_with_playbook += f"\n\n## PLAYBOOK (your self-knowledge — read, follow, and UPDATE after tasks)\n\nYou have a playbook at `{playbook_path}`. It contains your scan schedules, what works, what doesn't, self-eval metrics, and improvement queue. **Read it at boot (already loaded below). Update it via shell after completing autonomous tasks** — log what worked, what failed, update metrics, refine your approach.\n\nThis is how you get better across sessions. Every scan, every task, every failure teaches you something. Write it down.\n\n```\n{playbook_content}\n```"
+    # Playbook available via playbook_update tool - not injected into system prompt
 
     # Conversation state
     messages = [{"role": "system", "content": system_with_playbook}]
@@ -1207,34 +1250,15 @@ def run_agent():
         print(f"  {CYAN}└─────────────────────────────────────────────{RESET}")
         print()
 
-        # Let Midas comment on the briefing
-        briefing_prompt = (
-            f"You just booted up. Here's what changed since your last session:\n\n{briefing_data}\n\n"
-            "Give a brief (2-4 sentence) status update based on this. Be direct — what matters, "
-            "what needs attention, what you'd recommend doing first. Don't list everything, just the highlights."
-        )
-        messages.append({"role": "user", "content": briefing_prompt})
-        try:
-            briefing_resp = client.chat.completions.create(
-                model=MLX_MODEL,
-                messages=messages,
-                max_tokens=256,
-                temperature=0.7,
-            )
-            briefing_text = briefing_resp.choices[0].message.content.strip()
-            if briefing_text:
-                print(f"  {CYAN}Midas:{RESET} {briefing_text}")
-                print()
-                messages.append({"role": "assistant", "content": briefing_text})
-        except Exception:
-            pass  # Silent fail — briefing is nice-to-have, not critical
+        # Inject briefing as context (no LLM call — 9B degenerates on open-ended generation)
+        messages.append({"role": "user", "content": f"Session status:\n{briefing_data}\n\nWhat should we work on?"})
+        # Don't pre-generate a response — let the user's first input drive the conversation
 
     while True:
         # Get user input
         try:
             user_input = input(f"{GREEN}▸ {RESET}")
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{DIM}Shutting down...{RESET}")
             break
 
         if not user_input.strip():
@@ -1263,21 +1287,28 @@ def run_agent():
         messages.append({"role": "user", "content": user_input})
 
         # Auto-ingest every user message (daemon filters noise)
-        # This ensures nothing is lost even if the model forgets to call memory_ingest
         memory.ingest("user", user_input)
+
+        # RAG injection disabled — 9B can't reliably reason about injected context.
+        # Re-enable when running 70B on Pro. Memory still available via memory_recall tool.
 
         # Agent loop — keep going until model stops calling tools
         tool_rounds = 0
+        recent_tool_calls = []  # track for loop detection
         while tool_rounds < MAX_TOOL_ROUNDS:
+            # Use low temperature for all rounds — 9B needs it for reliable tool format
+            temp = TOOL_TEMPERATURE
+            # Select tools dynamically — core always, browser only when relevant
+            turn_tools = _select_tools(user_input, browser_online, tool_rounds)
             try:
                 t0 = time.time()
                 response = client.chat.completions.create(
                     model=MLX_MODEL,
                     messages=messages,
-                    tools=all_tools,
+                    tools=turn_tools,
                     tool_choice="auto",
                     max_tokens=2048,
-                    temperature=0.7,
+                    temperature=temp,
                 )
                 elapsed = time.time() - t0
             except Exception as e:
@@ -1286,6 +1317,26 @@ def run_agent():
 
             choice = response.choices[0]
             msg = choice.message
+
+            # Detect degenerate tool call format (model outputting raw XML instead of function calls)
+            if msg.content and not msg.tool_calls and any(t in msg.content for t in ["<tool_call>", "<function=", "```tool_call"]):
+                # Silent retry — expected behavior on 9B, no need to alarm the user
+                # Don't add this broken response to history, just retry at minimum temp
+                try:
+                    t0 = time.time()
+                    response = client.chat.completions.create(
+                        model=MLX_MODEL,
+                        messages=messages,
+                        tools=turn_tools,
+                        tool_choice="auto",
+                        max_tokens=2048,
+                        temperature=0.1,
+                    )
+                    elapsed = time.time() - t0
+                    choice = response.choices[0]
+                    msg = choice.message
+                except Exception:
+                    pass  # fall through to normal handling
 
             # Track inference metrics
             usage = getattr(response, 'usage', None)
@@ -1333,36 +1384,76 @@ def run_agent():
                     })
 
                 tool_rounds += 1
+
+                # Loop detection — same call 3x OR alternating pattern (A-B-A-B)
+                for tc in msg.tool_calls:
+                    call_sig = f"{tc.function.name}:{tc.function.arguments}"
+                    recent_tool_calls.append(call_sig)
+                if len(recent_tool_calls) >= 3:
+                    last_3 = recent_tool_calls[-3:]
+                    # Same call 3x
+                    is_loop = last_3[0] == last_3[1] == last_3[2]
+                    # Alternating: A-B-A
+                    if not is_loop and last_3[0] == last_3[2] and last_3[0] != last_3[1]:
+                        is_loop = True
+                    if is_loop:
+                        print(f"  {YELLOW}⚠ Tool loop detected — stopping{RESET}")
+                        messages.append({"role": "assistant", "content": "I'm going in circles. What specifically would you like me to do?"})
+                        break
+
                 continue  # let model process tool results
 
             else:
                 # No tool calls — print response and break
-                if msg.content:
-                    # Clean up any think tags from Qwen
-                    content = msg.content
+                content = msg.content or ""
+                if content:
+                    # Clean up any think tags from Qwen (full, partial, or bare)
                     import re
-                    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                    if content:
-                        print(f"\n{CYAN}{content}{RESET}\n")
-                        # Auto-ingest assistant responses that used tools
-                        # (these contain summaries of browsed content, search results, etc.)
-                        if tool_rounds > 0:
-                            memory.ingest("assistant", content)
-                messages.append({"role": "assistant", "content": msg.content or ""})
+                    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                    content = re.sub(r'<think>.*$', '', content, flags=re.DOTALL)
+                    content = re.sub(r'</?think>', '', content)
+                    content = content.strip()
+                    # Detect and truncate repetition degeneration
+                    content = _truncate_repetition(content)
+
+                if content:
+                    print(f"\n{CYAN}{content}{RESET}\n")
+                    if tool_rounds > 0:
+                        memory.ingest("assistant", content)
+                elif tool_rounds > 0:
+                    # Model used tools but produced empty response — nudge it
+                    print(f"  {DIM}(processing...){RESET}")
+                    messages.append({"role": "assistant", "content": ""})
+                    messages.append({"role": "user", "content": "Summarize what you found in 2-3 sentences."})
+                    tool_rounds += 1
+                    continue
+
+                messages.append({"role": "assistant", "content": content or ""})
                 break
 
-        # Trim history if too long
+        # Trim history if too long — respect tool call boundaries
         if len(messages) > MAX_HISTORY:
-            # Keep system prompt + last N messages
-            messages = [messages[0]] + messages[-(MAX_HISTORY - 1):]
+            messages = _trim_history(messages, MAX_HISTORY, client)
 
-    # Shutdown
+    # Shutdown — suppress noisy thread/resource cleanup
+    import threading, io
+    threading.excepthook = lambda args: None
+
     print(f"  {DIM}Shutting down...{RESET}")
     memory.stop()
     browser.disconnect()
     if dashboard_proc:
         print(f"  {DIM}Dashboard still running at http://localhost:{DASHBOARD_PORT} (Ctrl+C to stop){RESET}")
     print(f"  {GREEN}Session saved. Goodbye.{RESET}")
+
+    # Close stderr at the OS level — prevents resource_tracker child process
+    # from printing semaphore warnings after we exit
+    sys.stdout.flush()
+    try:
+        os.close(2)  # close fd 2 (stderr) so child processes inherit a dead fd
+    except OSError:
+        pass
+    os._exit(0)
 
 
 # ── Entry Point ─────────────────────────────────────────────────────────────
