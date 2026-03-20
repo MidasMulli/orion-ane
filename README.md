@@ -10,11 +10,11 @@ Mem0 stores facts. **Phantom thinks about them.**
 
 ```
 ┌─ GPU ── Your LLM (conversation + reasoning) ──────────┐
-┌─ CPU ── Memory Daemon (extract, embed, store) ─────────┐  1,721 emb/sec
-┌─ ANE ── Enricher (classify, relate, analyze) ──────────┐  ~2W, zero GPU impact
+┌─ CPU ── Memory Daemon (extract, embed, store) ─────────┐  1,721 emb/sec (MiniLM, M5 CPU)
+┌─ ANE ── Enricher (classify, relate, analyze) ──────────┐  ~2W
 ```
 
-Three processors. Three loops. Zero contention. **[Full documentation →](memory/README.md)**
+Three processors. Three loops. Near-zero contention (~3.8% measured). **[Full documentation →](memory/README.md)**
 
 ---
 
@@ -191,7 +191,7 @@ See [training/README.md](training/README.md) for detailed training instructions.
 
 ## Building
 
-Requires macOS 15+ on Apple Silicon (tested on M4).
+Requires macOS 15+ on Apple Silicon. Tested on M4 (training) and M5 Air 16GB (memory daemon, agent). macOS 26.3 (Tahoe).
 
 ```bash
 # Dynamic pipeline (recommended) — model selected at build time
@@ -296,6 +296,10 @@ MIT — see [LICENSE](LICENSE)
 
 ---
 
-*Built by a human + Claude, one weekend at a time.*
+## Related
+
+- [dual-path-inference](https://github.com/MidasMulli/dual-path-inference) — Initial GPU+ANE concurrency proof-of-concept (archived, evolved into this repo)
+- [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — Multi-source speculative decoding server using N-gram + PLD + ANE + GPU
+- [gdn-coreml](https://github.com/MidasMulli/gdn-coreml) — GatedDeltaNet SSM to CoreML converter for same-family ANE drafting
 
 

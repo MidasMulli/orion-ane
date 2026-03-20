@@ -251,19 +251,28 @@ class ANEModel:
             # Tokenize with chat template
             try:
                 messages = [{"role": "user", "content": prompt}]
-                input_ids = self.tokenizer.apply_chat_template(
+                ids = self.tokenizer.apply_chat_template(
                     messages, return_tensors="pt",
                     add_generation_prompt=True,
                     enable_thinking=False,
-                ).to(torch.int32)
+                )
+                # Handle both tensor and BatchEncoding returns
+                if hasattr(ids, 'input_ids'):
+                    input_ids = ids.input_ids.to(torch.int32)
+                elif isinstance(ids, torch.Tensor):
+                    input_ids = ids.to(torch.int32)
+                else:
+                    input_ids = torch.tensor(ids, dtype=torch.int32).unsqueeze(0)
             except Exception:
-                input_ids = self.tokenizer(
+                enc = self.tokenizer(
                     prompt, return_tensors="pt", add_special_tokens=True
-                ).input_ids.to(torch.int32)
+                )
+                input_ids = enc.input_ids.to(torch.int32) if hasattr(enc, 'input_ids') else enc.to(torch.int32)
 
             context_pos = input_ids.size(1)
             if context_pos >= context_length - 2:
-                return "[ERROR: prompt too long for context window]"
+                # Return empty - don't return error text that could be tokenized as draft
+                return ""
 
             # Prefill
             run_prefill(
@@ -307,6 +316,226 @@ class ANEModel:
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
             return text
+
+    def prefill_session(self, prompt: str) -> dict:
+        """Prefill the ANE KV cache for a prompt. Returns session state for incremental decode.
+        Call decode_token() after this to generate one token at a time with warm cache."""
+        if not self._loaded:
+            raise RuntimeError("Model not loaded")
+
+        import torch
+        from chat import run_prefill, create_unified_state
+
+        with self._lock:
+            context_length = self.metadata["context_length"]
+            batch_size = self.metadata.get("batch_size", 64)
+            update_mask_prefill = self.metadata.get("update_mask_prefill", False)
+            prefill_dynamic_slice = self.metadata.get("prefill_dynamic_slice", False)
+            single_token_mode = not (update_mask_prefill or prefill_dynamic_slice)
+
+            # Fresh state
+            self.state = create_unified_state(
+                self.ffn_models, context_length, True, metadata=self.metadata
+            )
+
+            # Tokenize
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                ids = self.tokenizer.apply_chat_template(
+                    messages, return_tensors="pt",
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+                if hasattr(ids, 'input_ids'):
+                    input_ids = ids.input_ids.to(torch.int32)
+                elif isinstance(ids, torch.Tensor):
+                    input_ids = ids.to(torch.int32)
+                else:
+                    input_ids = torch.tensor(ids, dtype=torch.int32).unsqueeze(0)
+            except Exception:
+                enc = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
+                input_ids = enc.input_ids.to(torch.int32) if hasattr(enc, 'input_ids') else enc.to(torch.int32)
+
+            context_pos = input_ids.size(1)
+            if context_pos >= context_length - 2:
+                return {"status": "error", "error": "prompt too long"}
+
+            # Prefill (the expensive part - ~292ms)
+            t0 = time.time()
+            run_prefill(
+                self.embed_model, self.ffn_models, input_ids,
+                context_pos, context_length, batch_size,
+                self.state, self.causal_mask, None,
+                single_token_mode=single_token_mode,
+                use_update_mask=update_mask_prefill,
+            )
+            prefill_ms = (time.time() - t0) * 1000
+
+            # Store session state for incremental decode
+            self._session = {
+                "input_ids": input_ids,
+                "pos": context_pos,
+                "context_length": context_length,
+                "active": True,
+            }
+
+            return {
+                "status": "ok",
+                "prefill_ms": round(prefill_ms, 1),
+                "context_pos": context_pos,
+                "context_length": context_length,
+                "remaining": context_length - context_pos - 1,
+            }
+
+    def decode_token(self) -> dict:
+        """Generate one token using warm KV cache. ~16ms per call.
+        Must call prefill_session() first."""
+        if not self._loaded:
+            return {"status": "error", "error": "not loaded"}
+        if not hasattr(self, '_session') or not self._session.get("active"):
+            return {"status": "error", "error": "no active session - call prefill first"}
+
+        import torch
+        from chat import generate_next_token
+
+        with self._lock:
+            s = self._session
+            if s["pos"] >= s["context_length"] - 1:
+                s["active"] = False
+                return {"status": "error", "error": "context full"}
+
+            t0 = time.time()
+            next_token = generate_next_token(
+                self.embed_model, self.ffn_models, self.lmhead_model,
+                s["input_ids"], s["pos"], s["context_length"],
+                self.metadata, self.state, self.causal_mask,
+            )
+            decode_ms = (time.time() - t0) * 1000
+
+            is_stop = next_token in self.stop_token_ids
+
+            if not is_stop:
+                # Update input_ids and position
+                if s["pos"] < s["input_ids"].size(1):
+                    s["input_ids"][0, s["pos"]] = next_token
+                else:
+                    s["input_ids"] = torch.cat([
+                        s["input_ids"],
+                        torch.tensor([[next_token]], dtype=torch.int32)
+                    ], dim=1)
+                s["pos"] += 1
+
+            token_text = self.tokenizer.decode([next_token], skip_special_tokens=True)
+
+            return {
+                "status": "ok",
+                "token_id": next_token,
+                "token_text": token_text,
+                "decode_ms": round(decode_ms, 1),
+                "pos": s["pos"],
+                "is_stop": is_stop,
+            }
+
+    def draft_k(self, K: int = 3) -> dict:
+        """Generate K draft tokens from warm KV cache. Returns text for cross-tokenizer use.
+        Must call prefill_session() first. ~17ms per token on ANE.
+        For K=3: ~51ms total, runs in parallel with GPU verification."""
+        if not self._loaded:
+            return {"status": "error", "error": "not loaded"}
+        if not hasattr(self, '_session') or not self._session.get("active"):
+            return {"status": "error", "error": "no active session"}
+
+        import torch
+        from chat import generate_next_token
+
+        with self._lock:
+            s = self._session
+            t0 = time.time()
+            token_ids = []
+            token_texts = []
+
+            for _ in range(K):
+                if s["pos"] >= s["context_length"] - 1:
+                    break
+
+                next_token = generate_next_token(
+                    self.embed_model, self.ffn_models, self.lmhead_model,
+                    s["input_ids"], s["pos"], s["context_length"],
+                    self.metadata, self.state, self.causal_mask,
+                )
+
+                if next_token in self.stop_token_ids:
+                    break
+
+                token_ids.append(next_token)
+                token_texts.append(
+                    self.tokenizer.decode([next_token], skip_special_tokens=True)
+                )
+
+                if s["pos"] < s["input_ids"].size(1):
+                    s["input_ids"][0, s["pos"]] = next_token
+                else:
+                    s["input_ids"] = torch.cat([
+                        s["input_ids"],
+                        torch.tensor([[next_token]], dtype=torch.int32)
+                    ], dim=1)
+                s["pos"] += 1
+
+            elapsed_ms = (time.time() - t0) * 1000
+            draft_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
+
+            return {
+                "status": "ok",
+                "text": draft_text,
+                "n_tokens": len(token_ids),
+                "token_ids": token_ids,
+                "elapsed_ms": round(elapsed_ms, 1),
+                "pos": s["pos"],
+            }
+
+    def rewind_session(self, n_tokens: int) -> dict:
+        """Rewind the session by n_tokens. Used after partial draft rejection.
+        NOTE: This only rewinds the position counter and input_ids.
+        The KV cache still has stale entries for the rewound tokens, but
+        they'll be overwritten on the next prefill/generate at those positions."""
+        if not hasattr(self, '_session') or not self._session.get("active"):
+            return {"status": "error", "error": "no active session"}
+
+        with self._lock:
+            s = self._session
+            s["pos"] = max(0, s["pos"] - n_tokens)
+            return {"status": "ok", "pos": s["pos"]}
+
+    def feed_text(self, text: str) -> dict:
+        """Feed accepted text back to the ANE session (in ANE's own tokenization).
+        Used after verification to sync the ANE's position with the accepted tokens."""
+        if not self._loaded:
+            return {"status": "error", "error": "not loaded"}
+        if not hasattr(self, '_session') or not self._session.get("active"):
+            return {"status": "error", "error": "no active session"}
+
+        import torch
+
+        with self._lock:
+            s = self._session
+            # Tokenize the text with ANE's tokenizer
+            token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+            if not token_ids:
+                return {"status": "ok", "fed": 0, "pos": s["pos"]}
+
+            for tid in token_ids:
+                if s["pos"] >= s["context_length"] - 1:
+                    break
+                if s["pos"] < s["input_ids"].size(1):
+                    s["input_ids"][0, s["pos"]] = tid
+                else:
+                    s["input_ids"] = torch.cat([
+                        s["input_ids"],
+                        torch.tensor([[tid]], dtype=torch.int32)
+                    ], dim=1)
+                s["pos"] += 1
+
+            return {"status": "ok", "fed": len(token_ids), "pos": s["pos"]}
 
 
 # ── Socket Server ─────────────────────────────────────────────
@@ -410,6 +639,30 @@ class SocketServer:
                     fact_type, confidence = heuristic_classify(text)
                     response = {"status": "ok", "type": fact_type, "confidence": confidence}
                 self._stats["tasks_completed"] += 1
+
+            elif cmd == "prefill" and self.model:
+                # Prefill KV cache, keep session warm for incremental decode
+                prompt = request.get("prompt", "")
+                response = self.model.prefill_session(prompt)
+
+            elif cmd == "decode_one" and self.model:
+                # Generate one token using warm KV cache (~16ms)
+                response = self.model.decode_token()
+
+            elif cmd == "draft_k" and self.model:
+                # Generate K draft tokens from warm cache (~17ms each)
+                K = request.get("k", 3)
+                response = self.model.draft_k(K=K)
+
+            elif cmd == "rewind" and self.model:
+                # Rewind session by N tokens after partial rejection
+                n = request.get("n", 0)
+                response = self.model.rewind_session(n)
+
+            elif cmd == "feed_text" and self.model:
+                # Feed accepted text back to ANE session
+                text = request.get("text", "")
+                response = self.model.feed_text(text)
 
             elif cmd == "ping":
                 response = {"status": "ok", "uptime": time.time() - self._stats["uptime_start"]}
@@ -570,6 +823,22 @@ class ANEClient:
         if resp["status"] == "ok":
             return resp["type"], resp["confidence"]
         raise RuntimeError(resp.get("error", "Unknown error"))
+
+    def prefill(self, prompt: str) -> dict:
+        """Prefill ANE KV cache for incremental drafting."""
+        return self._send({"cmd": "prefill", "prompt": prompt}, timeout=10.0)
+
+    def draft_k(self, K: int = 3) -> dict:
+        """Generate K draft tokens from warm cache. Returns text for cross-tokenizer use."""
+        return self._send({"cmd": "draft_k", "k": K}, timeout=5.0)
+
+    def rewind(self, n: int) -> dict:
+        """Rewind session by n tokens after partial rejection."""
+        return self._send({"cmd": "rewind", "n": n}, timeout=2.0)
+
+    def feed_text(self, text: str) -> dict:
+        """Feed accepted text to ANE session for re-sync."""
+        return self._send({"cmd": "feed_text", "text": text}, timeout=2.0)
 
     def ping(self) -> dict:
         return self._send({"cmd": "ping"}, timeout=5.0)

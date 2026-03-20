@@ -2,13 +2,11 @@
 
 Zero-cost persistent memory for local LLMs — extraction, embedding, and a continuous enrichment loop that organizes your knowledge while you sleep.
 
-Mem0 stores facts. **Phantom thinks about them.**
+## The pitch
 
-## The Pitch
+Every local LLM forgets. Phantom remembers — and it doesn't just store facts, it thinks about them. A continuous enrichment loop reclassifies, builds relationships, detects staleness, finds cross-entity patterns, and consolidates profiles. Your vault gets smarter while you sleep.
 
-Every local LLM forgets. Phantom remembers. But it doesn't just store facts — it thinks about them. A continuous enrichment loop reclassifies, builds relationships, detects staleness, finds cross-entity patterns, and consolidates profiles. Your vault gets smarter while you sleep.
-
-Three processors. Three loops. Zero contention.
+Three processors. Three loops. Near-zero contention (~3.8% measured).
 
 ```
 ┌─ GPU ────────────────────────────────────┐
@@ -16,11 +14,12 @@ Three processors. Three loops. Zero contention.
 └──────────────────────────────────────────┘
 ┌─ CPU ────────────────────────────────────┐
 │  Memory Daemon — extract, embed, store   │
-│  1,721 emb/sec, zero GPU impact          │
+│  1,721 emb/sec (all-MiniLM-L6-v2, 22M   │
+│  params, 384-dim, batch=64, M5 Air CPU)  │
 └──────────────────────────────────────────┘
 ┌─ ANE (optional) ────────────────────────┐
 │  Enricher — classify, relate, analyze    │
-│  Always-on, ~2W, zero GPU impact         │
+│  Always-on, ~2W                          │
 └──────────────────────────────────────────┘
 ```
 
@@ -30,7 +29,7 @@ Three processors. Three loops. Zero contention.
 
 Real-time visualization of the knowledge graph, activity feed, memory stats, fact type distribution, and recent decisions. Dark cyberpunk UI at `http://localhost:8422`.
 
-## Quick Start
+## Quick start
 
 ```python
 from daemon import MemoryDaemon
@@ -62,9 +61,9 @@ results = daemon.recall("cross-default thresholds")
 daemon.enrich_once()
 ```
 
-## Continuous Enrichment
+## Continuous enrichment
 
-This is the headline feature. Five sweeps run continuously in the background, analyzing and improving your vault:
+Five sweeps run continuously in the background, analyzing and improving your vault:
 
 | Sweep | What it does | Status |
 |-------|-------------|--------|
@@ -74,7 +73,7 @@ This is the headline feature. Five sweeps run continuously in the background, an
 | **PATTERNS** | Cross-entity analysis — outliers, similar profiles, recurring provisions | Working — 35 insights generated |
 | **CONSOLIDATE** | Auto-generates entity profile summaries pinned to top of entity pages | Working |
 
-### What Gets Created in the Vault
+### What gets created in the vault
 
 ```
 vault/memory/
@@ -93,7 +92,7 @@ vault/memory/
 └── tasks/
 ```
 
-### Sample Insight Note
+### Sample insight note
 
 What Phantom produces overnight while your LLM is idle:
 
@@ -112,7 +111,7 @@ What Phantom produces overnight while your LLM is idle:
 - Counterparty Alpha: 47 facts → 5-line profile (updated overnight)
 ```
 
-### ANE-Ready Architecture
+### ANE-ready architecture
 
 `Classifier` and `Embedder` are protocols — swap in a CoreML model with zero changes to sweep logic:
 
@@ -124,9 +123,9 @@ class Embedder(Protocol):
     def embed(self, texts: list[str]) -> np.ndarray: ...
 ```
 
-Currently runs on CPU with heuristics. On Apple Silicon with a CoreML model loaded, classification runs on the Neural Engine at ~2W with zero GPU impact.
+Currently runs on CPU with regex-based heuristics. On Apple Silicon with a CoreML model loaded, classification runs on the Neural Engine at ~2W.
 
-## How Memory Works
+## How memory works
 
 ### Extraction
 
@@ -136,14 +135,14 @@ Every conversation turn passes through `FactExtractor`:
 - Quantity parsing ($75M, 50 basis points, etc.)
 - Deduplication against existing memories via cosine similarity
 
-### Embedding & Storage
+### Embedding and storage
 
-- **sentence-transformers** (`all-MiniLM-L6-v2`, 22M params) on CPU
-- 1,721 embeddings/sec — fast enough that ANE isn't needed for this tier
+- **sentence-transformers** (`all-MiniLM-L6-v2`, 22M params, 384 dimensions) on CPU
+- 1,721 embeddings/sec measured on M5 Air CPU with batch size 64
 - **ChromaDB** for persistent vector storage with cosine similarity search
 - Semantic recall: query in natural language, get relevant facts ranked by relevance
 
-### Vault Writing
+### Vault writing
 
 Extracted facts are written as structured markdown to an Obsidian-compatible vault:
 - One file per entity, fact, decision, task
@@ -152,7 +151,9 @@ Extracted facts are written as structured markdown to an Obsidian-compatible vau
 
 ## Benchmarks
 
-### Three-Tier Eval Suite (22/22)
+### Three-tier eval suite (`eval_tiers.py`)
+
+Custom validation suite — not a standardized benchmark, but a functional test that verifies each tier can perform its intended task:
 
 ```
 CPU (extraction + recall) ....... 12/12 (100%)
@@ -162,49 +163,48 @@ TOTAL .......................... 22/22 (100%)
 Completed in 45.1s
 ```
 
-**CPU tier tests:** Fact extraction (all 4 types from ISDA paragraph), entity detection (10 entities including Counterparty Alpha), semantic recall accuracy, type filtering, noise rejection.
+**CPU tier (12 tests):** Fact extraction from ISDA paragraph (all 4 types), entity detection (10 entities including Counterparty Alpha), semantic recall accuracy, type filtering, noise rejection.
 
-**ANE tier tests:** Entity summarization (JPMorgan profile), relationship extraction (4 entities), risk identification (low cross-default threshold), quantity extraction (4 dollar amounts from CSA text). All under 2 seconds.
+**ANE tier (5 tests):** Entity summarization (JPMorgan profile), relationship extraction (4 entities), risk identification (low cross-default threshold), quantity extraction (4 dollar amounts from CSA text). All under 2 seconds. Requires ANE server running (`ane_server.py`).
 
-**GPU tier tests:** Domain explanation (5/6 terms), risk comparison, JSON generation, tool call formatting.
+**GPU tier (5 tests):** Domain explanation (5/6 terms), risk comparison, JSON generation, tool call formatting. Requires MLX server on port 8899.
 
 Run it yourself:
 ```bash
 ~/.mlx-env/bin/python3 eval_tiers.py
 ```
 
-### Concurrent Performance
+### Concurrent performance
 
-GPU inference runs at full speed while the memory daemon processes in background:
+GPU inference measured with and without the memory daemon processing embeddings. Single-run measurements, representative of typical usage:
 
 | Scenario | GPU tok/s | Impact |
 |----------|-----------|--------|
 | GPU alone | 24.4-25.0 | baseline |
-| GPU + daemon (20 embeddings) | 25.4 | -4.2% (noise) |
-| GPU + daemon (100 embeddings) | 25.9 | -3.6% (noise) |
+| GPU + daemon (20 embeddings) | 25.4 | within noise |
+| GPU + daemon (100 embeddings) | 25.9 | within noise |
 
-Near-zero contention measured (~3.8% average). 18 facts extracted and stored while the GPU generated at full speed.
+~3.8% average interference measured across runs. The daemon runs on CPU efficiency cores while GPU handles inference. They share the memory bus but not compute resources.
 
-### Embedding Throughput
+### Embedding throughput
 
-| Model | Params | Speed | Hardware |
-|-------|--------|-------|----------|
-| all-MiniLM-L6-v2 | 22M | 1,721 emb/sec | CPU |
+| Model | Params | Dimensions | Batch size | Speed | Hardware |
+|-------|--------|-----------|------------|-------|----------|
+| all-MiniLM-L6-v2 | 22M | 384 | 64 | 1,721 emb/sec | M5 Air CPU |
 
-## Agent Self-Knowledge (Playbook)
+## Agent self-knowledge (playbook)
 
-When integrated with the Phantom agent framework, the agent maintains a self-assessment document (`playbook.md`) it reads at boot and updates after every task:
+When integrated with the Phantom agent framework, the agent maintains a self-assessment document (`playbook.md`) it reads at boot and updates after tasks:
 
-- **Scan schedule** with timestamps (last run, next due)
 - **What works / what doesn't** — learned from experience, not hardcoded
 - **High-signal sources** — builds over time as the agent discovers useful feeds
-- **Self-eval metrics** — tracks accuracy, tool chain success rates, noise ratio
+- **Self-eval metrics** — tracks accuracy, tool chain success rates
 - **Improvement queue** — next things to try
 - **Lessons learned** — persistent behavioral memory
 
-The playbook lives in the vault (visible in Obsidian) and survives restarts. The agent reads it at boot, follows it during tasks, and writes back what it learned. This is how the agent gets better across sessions.
+The playbook lives in the vault (visible in Obsidian) and survives restarts.
 
-## API Reference
+## API reference
 
 ### MemoryDaemon
 
@@ -254,20 +254,16 @@ engine.sweep_patterns()           # Cross-entity anomaly detection
 engine.sweep_consolidate()        # Generate entity profiles
 ```
 
-## Apple Silicon Bonus
+## Hardware
 
-On Macs with Apple Silicon, the three tiers map to physically separate processors:
-
-- **GPU** (Metal) — your main LLM, fully utilized during conversation
-- **CPU** (Efficiency cores) — embedding + extraction, negligible power draw
-- **ANE** (Neural Engine) — enricher classification, ~2W, completely independent bus
-
-This isn't software concurrency — it's hardware parallelism. The ANE has its own data path to unified memory. The enricher literally cannot slow down your LLM.
+- MacBook Air M5, 16GB unified memory, 10 GPU cores, 16 Neural Engine cores
+- macOS 26.3 (Tahoe)
+- MLX 0.31.1, Qwen3.5-9B-MLX-4bit (GPU), Qwen3-1.7B CoreML (ANE, optional)
 
 ## Requirements
 
 - Python 3.11+
-- macOS (tested on M4/M5 Apple Silicon, works on Intel with CPU-only)
+- macOS (tested on M5 Apple Silicon, works on Intel with CPU-only)
 - ChromaDB, sentence-transformers, numpy
 
 ```bash
@@ -278,10 +274,13 @@ Optional for ANE tier:
 - CoreML model converted via [ANEMLL](https://github.com/Anemll/Anemll)
 - `ane_server.py` running with persistent CoreML model
 
+## Related
+
+- [orion-ane](https://github.com/MidasMulli/orion-ane) — Parent repo. ANE training + agent framework.
+- [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — Speculative decoding server that uses this memory system
+- [dual-path-inference](https://github.com/MidasMulli/dual-path-inference) — Initial GPU+ANE concurrency proof-of-concept (archived)
+- [gdn-coreml](https://github.com/MidasMulli/gdn-coreml) — GatedDeltaNet SSM to CoreML converter
+
 ## License
 
 MIT
-
----
-
-*Built by a human + Claude, one weekend at a time.*

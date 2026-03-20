@@ -12,15 +12,21 @@ One file. No plugins. No skill system. Just a sharp agent loop with
 persistent memory and browser access.
 """
 
-import os
-import sys
+import glob as globmod
+import io
 import json
-import asyncio
+import logging
+import os
+import re
 import signal
 import subprocess
+import sys
+import threading
 import time
+import traceback
+import urllib.request
+import warnings
 from datetime import datetime
-from typing import Optional
 
 from openai import OpenAI
 from browser import BrowserBridge, BROWSER_TOOLS
@@ -88,8 +94,6 @@ VAULT_PATH = "/Users/midas/Desktop/cowork/vault"
 
 def vault_read(path: str = "", query: str = "") -> dict:
     """Read files or search the Obsidian vault. Read-only."""
-    import glob as globmod
-
     if query:
         # Search across all markdown files
         matches = []
@@ -156,7 +160,6 @@ def vault_read(path: str = "", query: str = "") -> dict:
 
 def vault_insight(topic: str, memory_bridge) -> dict:
     """Cross-reference vault project context with conversation memories."""
-    import glob as globmod
 
     result = {"topic": topic, "vault_context": [], "memory_context": []}
 
@@ -222,7 +225,6 @@ def vault_insight(topic: str, memory_bridge) -> dict:
     for hit in vault_hits:
         for excerpt in hit.get("excerpts", []):
             # Extract capitalized terms as potential entities
-            import re
             for match in re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', excerpt):
                 if len(match) > 3:
                     vault_entities.add(match)
@@ -317,10 +319,8 @@ def playbook_tool(section: str, action: str, content: str = "") -> dict:
         text = text[:start] + new_section + rest[end:]
 
         # Update the "Last updated" line
-        from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d %H:%M")
         if "*Last updated:" in text:
-            import re
             text = re.sub(r'\*Last updated:.*\*', f'*Last updated: {today} (auto)*', text)
 
         with open(PLAYBOOK_PATH, "w") as f:
@@ -348,8 +348,8 @@ class MemoryBridge:
             sys.path.insert(0, os.path.abspath(daemon_dir))
             from daemon import MemoryDaemon
 
-        vault_path = "/Users/midas/Desktop/cowork/vault"
-        db_path = "/Users/midas/Desktop/cowork/orion-ane/memory/chromadb_live"
+        vault_path = VAULT_PATH
+        db_path = os.path.join(os.path.dirname(__file__), "..", "memory", "chromadb_live")
 
         self.daemon = MemoryDaemon(
             vault_path=vault_path, db_path=db_path,
@@ -489,7 +489,7 @@ def _write_metrics(prompt_tokens, completion_tokens, elapsed, gen_tps, tool_roun
         }
         with open(METRICS_FILE, "w") as f:
             json.dump(metrics, f)
-    except:
+    except (OSError, TypeError):
         pass
 
 
@@ -555,7 +555,6 @@ def scan_digest_tool(mode: str = "latest", top_n: int = 10) -> dict:
 
 def message_claude_tool(message: str, priority: str = "medium", context: str = "") -> dict:
     """Write a message to Claude's inbox for review at next session."""
-    from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     entry = f"\n## {timestamp}\n**Priority:** {priority}\n**From:** Midas\n\n{message}\n"
@@ -579,6 +578,8 @@ def message_claude_tool(message: str, priority: str = "medium", context: str = "
 def execute_tool(name: str, args: dict) -> str:
     """Execute a tool call and return the result as a string."""
     # Argument validation — reject obviously bad calls
+    if name == "memory_recall" and not args.get("query", "").strip():
+        return json.dumps({"error": "Empty recall query. Provide a specific search term."})
     if name == "browse_search" and not args.get("query", "").strip():
         return json.dumps({"error": "Empty search query. Provide a specific query."})
     if name == "browse_navigate" and not args.get("url", "").startswith("http"):
@@ -733,17 +734,14 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
         pass
 
     # 2. Enricher output — check for recent insights and relationships
+    today = datetime.now().strftime("%Y-%m-%d")
     insights_dir = os.path.join(VAULT_PATH, "memory", "insights")
     if os.path.isdir(insights_dir):
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
         today_file = os.path.join(insights_dir, f"patterns-{today}.md")
         if os.path.exists(today_file):
             try:
                 with open(today_file, "r") as f:
                     content = f.read()
-                # Count insight sections (## headers)
-                import re
                 sections = re.findall(r'^## .+', content, re.MULTILINE)
                 if sections:
                     lines.append(f"- Enricher produced {len(sections)} insight(s) today: {', '.join(s.replace('## ', '') for s in sections[:3])}")
@@ -754,8 +752,6 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
     rel_path = os.path.join(VAULT_PATH, "memory", "relationships.md")
     if os.path.exists(rel_path):
         try:
-            rel_size = os.path.getsize(rel_path)
-            # Count relationship entries (lines starting with -)
             with open(rel_path, "r") as f:
                 rel_lines = [l for l in f if l.strip().startswith("- ")]
             if rel_lines:
@@ -763,17 +759,14 @@ def generate_briefing(stats: dict, playbook_content: str) -> str:
         except Exception:
             pass
 
-    # 3. Playbook — queued improvements (skip scan schedule — user doesn't want scan nags at boot)
+    # 3. Playbook — queued improvements
     if playbook_content:
-        import re
         queue_items = re.findall(r'- \[ \] (.+)', playbook_content)
         if queue_items:
             lines.append(f"- Improvement queue: {len(queue_items)} items (next: {queue_items[0].strip()[:60]})")
 
     # 4. Stale flags
     if os.path.isdir(insights_dir):
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
         stale_file = os.path.join(insights_dir, f"stale-{today}.md")
         if os.path.exists(stale_file):
             try:
@@ -900,13 +893,20 @@ def print_tool_call(name: str, args: dict):
             print(f"  {DIM}{icon} listing vault{RESET}")
     elif name == "vault_insight":
         print(f"  {DIM}{icon} cross-referencing: {args.get('topic', '')[:50]}{RESET}")
+    elif name == "scan_digest":
+        mode = args.get("mode", "latest")
+        print(f"  {DIM}{icon} scans: {mode}{RESET}")
+    elif name == "message_claude":
+        print(f"  {DIM}{icon} → Claude: {args.get('message', '')[:50]}{RESET}")
+    elif name == "playbook_update":
+        print(f"  {DIM}{icon} playbook: {args.get('action', 'read')} {args.get('section', '')}{RESET}")
     elif name == "shell":
         print(f"  {DIM}{icon} $ {args.get('command', '')[:60]}{RESET}")
 
 def print_tool_result(name: str, result: str):
     try:
         data = json.loads(result)
-    except:
+    except (json.JSONDecodeError, TypeError):
         data = result
 
     if name == "memory_ingest" and isinstance(data, dict):
@@ -983,14 +983,12 @@ def _truncate_repetition(text: str) -> str:
             later_text = " ".join(words[i + window_size:]).lower()
             if phrase in later_text:
                 cut_point = " ".join(words[:i + window_size])
-                import re
                 last_sentence = re.search(r'.*[.!?]', cut_point)
                 if last_sentence and len(last_sentence.group()) > len(cut_point) // 3:
                     return last_sentence.group()
                 return cut_point
 
     # Strategy 2: Check if any sentence start repeats (case-insensitive, first 5 words)
-    import re
     sentences = re.split(r'(?<=[.!?])\s+', text)
     if len(sentences) > 1:
         seen_starts = set()
@@ -1107,10 +1105,9 @@ def start_dashboard():
 
     # Check if already running
     try:
-        import urllib.request
         urllib.request.urlopen(f"http://localhost:{DASHBOARD_PORT}/api/stats", timeout=1)
         return None  # already running
-    except:
+    except (urllib.error.URLError, OSError):
         pass
 
     proc = subprocess.Popen(
@@ -1124,9 +1121,6 @@ def start_dashboard():
 
 def run_agent():
     # Kill all library logging — only our prints reach the terminal
-    import io
-    import logging
-    import warnings
     warnings.filterwarnings("ignore")
     logging.basicConfig(level=logging.CRITICAL)
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -1150,6 +1144,7 @@ def run_agent():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Boot everything silently
+    dashboard_proc = None
     try:
         dashboard_proc = start_dashboard()
         memory.start()
@@ -1159,7 +1154,6 @@ def run_agent():
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         logging.disable(logging.NOTSET)
-        import traceback
         print(f"\n  \033[91m✗ Boot failed:\033[0m {boot_err}")
         traceback.print_exc()
         return
@@ -1200,7 +1194,6 @@ def run_agent():
                      "--user-data-dir=" + os.path.expanduser("~/.chrome-debug"),
                      "--no-first-run",
                      "--window-size=800,600",
-                     "--window-position=9999,9999",
                      "about:blank"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     start_new_session=True,
@@ -1250,9 +1243,8 @@ def run_agent():
         print(f"  {CYAN}└─────────────────────────────────────────────{RESET}")
         print()
 
-        # Inject briefing as context (no LLM call — 9B degenerates on open-ended generation)
-        messages.append({"role": "user", "content": f"Session status:\n{briefing_data}\n\nWhat should we work on?"})
-        # Don't pre-generate a response — let the user's first input drive the conversation
+        # Append briefing to system prompt so model has context without a fake user message
+        messages[0]["content"] += f"\n\n## SESSION STATUS\n{briefing_data}"
 
     while True:
         # Get user input
@@ -1369,7 +1361,7 @@ def run_agent():
                     name = tc.function.name
                     try:
                         args = json.loads(tc.function.arguments)
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         args = {}
 
                     print_tool_call(name, args)
@@ -1408,7 +1400,6 @@ def run_agent():
                 content = msg.content or ""
                 if content:
                     # Clean up any think tags from Qwen (full, partial, or bare)
-                    import re
                     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
                     content = re.sub(r'<think>.*$', '', content, flags=re.DOTALL)
                     content = re.sub(r'</?think>', '', content)
@@ -1436,7 +1427,6 @@ def run_agent():
             messages = _trim_history(messages, MAX_HISTORY, client)
 
     # Shutdown — suppress noisy thread/resource cleanup
-    import threading, io
     threading.excepthook = lambda args: None
 
     print(f"  {DIM}Shutting down...{RESET}")

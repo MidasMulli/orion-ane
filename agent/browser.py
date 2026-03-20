@@ -10,18 +10,21 @@ Requirements:
   - Chrome running with: --remote-debugging-port=9222 --user-data-dir=$HOME/.chrome-debug
   - Start with: ~/.hermes/start-chrome-debug.sh
 
-Provides 5 tools:
+Provides 8 tools:
   browse_navigate  — Open a URL
   browse_read      — Read page content (text extraction)
   browse_click     — Click an element by selector
   browse_type      — Type text into an input field
   browse_js        — Execute JavaScript in page context
+  browse_search    — Google search
+  browse_x_feed    — Scan X (Twitter) feed
+  browse_tabs      — List open browser tabs
 """
 
 import json
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 
 CDP_HOST = "127.0.0.1"
@@ -43,7 +46,7 @@ class BrowserBridge:
                 f"http://{CDP_HOST}:{CDP_PORT}/json/version", timeout=1
             )
             return resp.status == 200
-        except:
+        except (urllib.error.URLError, OSError):
             return False
 
     def connect(self):
@@ -153,7 +156,7 @@ class BrowserBridge:
         self._ensure_tab()
         try:
             # Escape quotes in text
-            escaped = text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+            escaped = text.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
             js = f"""
             (() => {{
                 const el = document.querySelector('{selector}');
@@ -181,7 +184,7 @@ class BrowserBridge:
                 # Try to parse as JSON
                 try:
                     return json.loads(val["value"])
-                except:
+                except (json.JSONDecodeError, TypeError):
                     return {"result": val["value"]}
             elif val.get("type") == "number":
                 return {"result": val["value"]}
@@ -436,7 +439,7 @@ class BrowserBridge:
             )
             tabs = json.loads(resp.read())
             return [{"title": t.get("title", ""), "url": t.get("url", ""), "id": t.get("id", "")} for t in tabs if t.get("type") == "page"]
-        except:
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
             return []
 
     def switch_tab(self, tab_index: int = 0) -> dict:
@@ -449,7 +452,7 @@ class BrowserBridge:
             if self._tab:
                 try:
                     self._tab.stop()
-                except:
+                except Exception:
                     pass
             self._tab = tabs[tab_index]
             self._tab.start()
@@ -464,7 +467,7 @@ class BrowserBridge:
         if self._tab:
             try:
                 self._tab.stop()
-            except:
+            except Exception:
                 pass
         self._connected = False
 
