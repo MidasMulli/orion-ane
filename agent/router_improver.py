@@ -27,10 +27,12 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from router import PATTERNS, layer1_route, strip_greeting
-from feedback_loop import get_recent_corrections, get_routing_stats, LOG_DIR
+from feedback_loop import (get_recent_corrections, get_routing_stats, get_recent_weaknesses,
+                          LOG_DIR)
 
 PROPOSALS_FILE = os.path.join(LOG_DIR, "proposals.jsonl")
 DECISIONS_FILE = os.path.join(LOG_DIR, "decisions.jsonl")
+WEAKNESSES_FILE = os.path.join(LOG_DIR, "weaknesses.jsonl")
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
@@ -83,6 +85,55 @@ def analyze_l2_fallbacks(n=200):
             fallbacks[key]["count"] += 1
 
     return sorted(fallbacks.values(), key=lambda x: x["count"], reverse=True)
+
+
+def gather_improvement_signals(n=200):
+    """Three sources of signal, unified format:
+    1. User corrections (explicit 'no I meant...')
+    2. L2 fallbacks (implicit: could be L1 keywords)
+    3. Self-test weaknesses (automated findings)
+
+    Returns list of dicts with: input, wrong_route, correct_route, source, weight
+    """
+    all_signals = []
+
+    # Source 1: User corrections (weight 3 — highest signal)
+    corrections = get_recent_corrections(n)
+    for c in corrections:
+        if c.get("type") != "correction":
+            continue
+        all_signals.append({
+            "input": c.get("user_msg", ""),
+            "wrong_route": c.get("original_tool"),
+            "correct_route": c.get("wanted_tool"),
+            "source": "user",
+            "weight": 3,
+        })
+
+    # Source 2: L2 fallbacks (weight 1 — could be promoted to L1)
+    fallbacks = analyze_l2_fallbacks(n)
+    for fb in fallbacks:
+        for msg in fb["msgs"]:
+            all_signals.append({
+                "input": msg,
+                "wrong_route": None,  # not wrong, just slow (L2 instead of L1)
+                "correct_route": fb["tool"],
+                "source": "l2_fallback",
+                "weight": 1,
+            })
+
+    # Source 3: Self-test weaknesses (weight 2)
+    weaknesses = get_recent_weaknesses(n)
+    for w in weaknesses:
+        all_signals.append({
+            "input": w.get("input", ""),
+            "wrong_route": w.get("actual_route"),
+            "correct_route": w.get("expected_route"),
+            "source": "self_test",
+            "weight": 2,
+        })
+
+    return all_signals
 
 
 # ── Keyword Extraction ───────────────────────────────────────────────────────
@@ -172,6 +223,10 @@ def load_test_cases():
     cases.append(("Run command `ls -la`", "shell"))
     cases.append(("Any new scans?", "scan_digest"))
     cases.append(("Show the playbook", "playbook_update"))
+    # Self-observation
+    cases.append(("Test yourself", "self_test"))
+    cases.append(("Show your brain", "brain_snapshot"))
+    cases.append(("Improve yourself", "self_improve"))
     cases.append(("Scan my X feed", "browse_x_feed"))
     cases.append(("What's on Twitter?", "browse_x_feed"))
     cases.append(("Hey, search Google for ISDA 2026 updates", "browse_search"))
@@ -548,13 +603,19 @@ def main():
             print(f"\nPost-apply score: {passed}/{total}")
 
     elif args.auto:
-        print("Analyzing corrections and L2 fallbacks...\n")
+        print("Analyzing corrections, L2 fallbacks, and self-test weaknesses...\n")
 
-        # 1. Check correction patterns
+        signals = gather_improvement_signals()
+        if signals:
+            print(f"  Found {len(signals)} signals: "
+                  f"{sum(1 for s in signals if s['source'] == 'user')} user, "
+                  f"{sum(1 for s in signals if s['source'] == 'l2_fallback')} L2 fallback, "
+                  f"{sum(1 for s in signals if s['source'] == 'self_test')} self-test\n")
+
+        # 1. Check correction patterns (user corrections — weight 3)
         correction_patterns = analyze_corrections()
         for cp in correction_patterns:
             if cp["wanted"] and cp["count"] >= 2:
-                # Try to find a keyword from the messages
                 kw_candidates = extract_candidate_keywords(cp["msgs"], cp["wanted"])
                 for kw, count in kw_candidates[:3]:
                     result = propose_keyword_addition(
@@ -579,6 +640,28 @@ def main():
                     if result["status"] == "proposed":
                         print(f"  PROPOSED: add '{kw}' to {fb['tool']} (L2→L1 promotion)")
                         break
+
+        # 3. Self-test weaknesses
+        weaknesses = get_recent_weaknesses()
+        routing_weaknesses = [w for w in weaknesses if w.get("expected_route") and w.get("actual_route")
+                              and w["expected_route"] != w["actual_route"]]
+        if routing_weaknesses:
+            # Group by expected route
+            by_route = {}
+            for w in routing_weaknesses:
+                key = w["expected_route"]
+                by_route.setdefault(key, []).append(w["input"])
+            for tool, msgs in by_route.items():
+                if len(msgs) >= 2:
+                    kw_candidates = extract_candidate_keywords(msgs, tool)
+                    for kw, count in kw_candidates[:3]:
+                        result = propose_keyword_addition(
+                            tool, kw,
+                            reason=f"Self-test weakness {len(msgs)}x: should route to {tool}"
+                        )
+                        if result["status"] == "proposed":
+                            print(f"  PROPOSED: add '{kw}' to {tool} (self-test fix)")
+                            break
 
         print("\nRun with --report to see all proposals.")
 

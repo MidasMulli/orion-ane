@@ -744,17 +744,65 @@ def test_P05():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# O: SELF-OBSERVATION — Midas observes and improves itself
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_O01():
+    """'test yourself' routes to self_test"""
+    tool, args = route("test yourself", llm_fn=llm_classify)
+    if tool == "self_test":
+        return ("pass", f"self_test with mode={args.get('mode')}")
+    return ("fail", f"Routed to {tool} instead of self_test")
+
+def test_O02():
+    """'show your brain' routes to brain_snapshot"""
+    tool, args = route("show your brain", llm_fn=llm_classify)
+    if tool == "brain_snapshot":
+        return ("pass", f"brain_snapshot with scope={args.get('scope')}")
+    return ("fail", f"Routed to {tool} instead of brain_snapshot")
+
+def test_O03():
+    """'how did you route that' routes to brain_snapshot with scope=last"""
+    tool, args = route("how did you route that", llm_fn=llm_classify)
+    if tool == "brain_snapshot" and args.get("scope") == "last":
+        return ("pass", "brain_snapshot scope=last")
+    if tool == "brain_snapshot":
+        return ("warn", f"brain_snapshot but scope={args.get('scope')} not 'last'")
+    return ("fail", f"Routed to {tool} instead of brain_snapshot")
+
+def test_O04():
+    """'improve yourself' routes to self_improve"""
+    tool, args = route("improve yourself", llm_fn=llm_classify)
+    if tool == "self_improve":
+        return ("pass", f"self_improve with mode={args.get('mode')}")
+    return ("fail", f"Routed to {tool} instead of self_improve")
+
+def test_O05():
+    """'run hardcore stress test' routes to self_test with mode=hardcore"""
+    tool, args = route("run hardcore stress test", llm_fn=llm_classify)
+    if tool == "self_test" and args.get("mode") == "hardcore":
+        return ("pass", "self_test mode=hardcore")
+    if tool == "self_test":
+        return ("warn", f"self_test but mode={args.get('mode')} not 'hardcore'")
+    return ("fail", f"Routed to {tool} instead of self_test")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
+JSON_MODE = "--json" in sys.argv
+
 def main():
-    print("\n" + "=" * 70)
-    print("  MIDAS AGENT v2 — DEEP LIVE STRESS TEST")
-    print("  Four-path server on :8899 | Chrome CDP on :9222")
-    print("=" * 70)
+    if not JSON_MODE:
+        print("\n" + "=" * 70)
+        print("  MIDAS AGENT v2 — DEEP LIVE STRESS TEST")
+        print("  Four-path server on :8899 | Chrome CDP on :9222")
+        print("=" * 70)
 
     # Boot memory
-    print(f"\n  {DIM}Booting memory daemon...{RESET}", flush=True)
+    if not JSON_MODE:
+        print(f"\n  {DIM}Booting memory daemon...{RESET}", flush=True)
     import io, warnings, logging
     warnings.filterwarnings("ignore")
     logging.disable(logging.CRITICAL)
@@ -772,7 +820,8 @@ def main():
     set_memory(memory)
 
     sys.stdout, sys.stderr = old_out, old_err
-    print(f"  {DIM}Memory: {memory.stats().get('total_memories', '?')} facts{RESET}")
+    if not JSON_MODE:
+        print(f"  {DIM}Memory: {memory.stats().get('total_memories', '?')} facts{RESET}")
 
     # Check browser
     try:
@@ -781,11 +830,13 @@ def main():
         if br.is_available():
             br.connect()
             set_browser(br)
-            print(f"  {DIM}Browser: connected{RESET}")
-        else:
+            if not JSON_MODE:
+                print(f"  {DIM}Browser: connected{RESET}")
+        elif not JSON_MODE:
             print(f"  {DIM}Browser: not available{RESET}")
     except Exception as e:
-        print(f"  {DIM}Browser: {e}{RESET}")
+        if not JSON_MODE:
+            print(f"  {DIM}Browser: {e}{RESET}")
 
     # ── Run all tests ──
 
@@ -870,13 +921,22 @@ def main():
             ("P04", "Playbook read", test_P04),
             ("P05", "Message Claude tool", test_P05),
         ]),
+        ("O", "SELF-OBSERVATION", [
+            ("O01", "'test yourself' -> self_test", test_O01),
+            ("O02", "'show your brain' -> brain_snapshot", test_O02),
+            ("O03", "'how did you route that' -> brain_snapshot(last)", test_O03),
+            ("O04", "'improve yourself' -> self_improve", test_O04),
+            ("O05", "'hardcore stress test' -> self_test(hardcore)", test_O05),
+        ]),
     ]
 
     total_tests = sum(len(tests) for _, _, tests in sections)
-    print(f"\n  Running {total_tests} tests...\n")
+    if not JSON_MODE:
+        print(f"\n  Running {total_tests} tests...\n")
 
     for section_id, section_name, tests in sections:
-        print(f"\n  ── {section_id}: {section_name} {'─' * (50 - len(section_name))}")
+        if not JSON_MODE:
+            print(f"\n  ── {section_id}: {section_name} {'─' * (50 - len(section_name))}")
         for test_id, desc, fn in tests:
             run_test(test_id, desc, fn)
 
@@ -886,6 +946,55 @@ def main():
     fails = sum(1 for _, s, _, _ in results if s == "fail")
     total_time = sum(e for _, _, _, e in results)
 
+    # ── JSON output mode ──
+    if JSON_MODE:
+        from feedback_loop import save_stress_result, load_last_stress_result, log_self_identified_weakness
+
+        # Compare to last run
+        last = load_last_stress_result()
+        comparison = None
+        if last:
+            comparison = {
+                "prev_pass": last.get("pass", 0),
+                "prev_total": last.get("total", 0),
+                "delta_pass": passes - last.get("pass", 0),
+                "delta_total": total_tests - last.get("total", 0),
+                "regressed": passes < last.get("pass", 0),
+            }
+
+        # Log weaknesses
+        for tid, status, detail, elapsed in results:
+            if status in ("warn", "fail"):
+                section_id = tid[0]
+                log_self_identified_weakness(
+                    test_id=tid,
+                    category=section_id,
+                    input_msg=detail[:200],
+                    expected="pass",
+                    actual=status,
+                    reason=detail[:200],
+                )
+
+        # Save this run
+        run_result = {
+            "total": total_tests,
+            "pass": passes,
+            "warn": warns,
+            "fail": fails,
+            "duration": round(total_time, 1),
+            "tests": [
+                {"id": tid, "status": s, "detail": d[:200], "elapsed": round(e, 2)}
+                for tid, s, d, e in results
+            ],
+        }
+        save_stress_result(run_result)
+
+        output = {**run_result, "comparison": comparison}
+        print(json.dumps(output))
+        memory.stop()
+        return fails
+
+    # ── Human-readable output ──
     print(f"\n{'=' * 70}")
     print(f"  RESULTS: {passes} pass / {warns} warn / {fails} fail  ({total_tests} total, {total_time:.1f}s)")
     print(f"{'=' * 70}")

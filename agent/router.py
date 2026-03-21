@@ -117,26 +117,44 @@ PATTERNS = [
                     'stats' if 'stats' in msg.lower() else 'latest'
         },
     },
-    # Self-test (must be before shell — specific pattern)
+    # Message Claude (before self_test — "message claude: ...stress test" must match here first)
+    {
+        'keywords': ['message claude', 'tell claude', 'leave claude a note',
+                     'claude inbox'],
+        'tool': 'message_claude',
+        'extract': lambda msg: msg,
+        'args': lambda msg: {'message': msg, 'priority': 'medium'},
+    },
+    # Self-test (first-class tool, not shell)
     {
         'keywords': ['stress test', 'run tests', 'test yourself', 'self test',
-                     'self-test', 'light test', 'hardcore test', 'deep test'],
-        'tool': 'shell',
-        'extract': lambda msg: ('~/.mlx-env/bin/python3 live_stress_test.py'
-                                if 'hardcore' in msg.lower() or 'deep' in msg.lower() or 'stress' in msg.lower()
-                                else '~/.mlx-env/bin/python3 test_router.py'),
-        'args': lambda msg: {'command': ('cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 live_stress_test.py'
-                                         if 'hardcore' in msg.lower() or 'deep' in msg.lower() or 'stress' in msg.lower()
-                                         else 'cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 test_router.py')},
+                     'self-test', 'light test', 'hardcore test', 'deep test',
+                     'check yourself', 'how are you performing', 'run diagnostics'],
+        'tool': 'self_test',
+        'extract': lambda msg: 'hardcore' if any(w in msg.lower()
+                      for w in ['hardcore', 'full', 'deep', 'stress', 'all']) else 'light',
+        'args': lambda msg: {'mode': 'hardcore' if any(w in msg.lower()
+                      for w in ['hardcore', 'full', 'deep', 'stress', 'all']) else 'light'},
     },
-    # Monitor / profiler snapshot (must be before shell)
+    # Brain snapshot (first-class tool)
     {
         'keywords': ['brain monitor', 'show monitor', 'open monitor',
                      'profiler', 'run profiler', 'show internals',
-                     'your brain', 'system snapshot'],
-        'tool': 'shell',
-        'extract': lambda msg: '~/.mlx-env/bin/python3 monitor.py --snapshot',
-        'args': lambda msg: {'command': 'cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 monitor.py --snapshot'},
+                     'your brain', 'system snapshot', 'brain snapshot',
+                     'show diagnostics', 'how did you route that'],
+        'tool': 'brain_snapshot',
+        'extract': lambda msg: 'last' if any(w in msg.lower()
+                      for w in ['last', 'that', 'previous']) else 'session',
+        'args': lambda msg: {'scope': 'last' if any(w in msg.lower()
+                      for w in ['last', 'that', 'previous']) else 'session'},
+    },
+    # Self-improve (first-class tool)
+    {
+        'keywords': ['improve yourself', 'optimize yourself', 'run improver',
+                     'check for improvements', 'any improvements'],
+        'tool': 'self_improve',
+        'extract': lambda msg: 'analyze',
+        'args': lambda msg: {'mode': 'analyze'},
     },
     # Shell
     {
@@ -171,14 +189,6 @@ PATTERNS = [
         'tool': 'playbook_update',
         'extract': lambda msg: None,
         'args': lambda msg: {'section': 'full', 'action': 'read'},
-    },
-    # Message Claude
-    {
-        'keywords': ['message claude', 'tell claude', 'leave claude a note',
-                     'claude inbox'],
-        'tool': 'message_claude',
-        'extract': lambda msg: msg,
-        'args': lambda msg: {'message': msg, 'priority': 'medium'},
     },
 ]
 

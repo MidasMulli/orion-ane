@@ -23,7 +23,9 @@ from datetime import datetime
 LOG_DIR = os.path.join(os.path.dirname(__file__), "routing_log")
 LOG_FILE = os.path.join(LOG_DIR, "decisions.jsonl")
 CORRECTIONS_FILE = os.path.join(LOG_DIR, "corrections.jsonl")
+WEAKNESSES_FILE = os.path.join(LOG_DIR, "weaknesses.jsonl")
 STATS_FILE = os.path.join(LOG_DIR, "stats.json")
+LAST_STRESS_FILE = os.path.join(LOG_DIR, "last_stress_result.json")
 
 
 def _ensure_dir():
@@ -193,3 +195,112 @@ def get_recent_corrections(n: int = 10) -> list:
         return entries
     except FileNotFoundError:
         return []
+
+
+# ── Self-identified Weakness Tracking ────────────────────────────────────────
+
+def log_self_identified_weakness(test_id: str, category: str, input_msg: str,
+                                  expected: str, actual: str, reason: str):
+    """Log a weakness found by self-test. Same format as user corrections
+    so router_improver.py can process both uniformly."""
+    _ensure_dir()
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "source": "self_test",
+        "test_id": test_id,
+        "category": category,
+        "input": input_msg[:200],
+        "expected_route": expected,
+        "actual_route": actual,
+        "reason": reason,
+    }
+    with open(WEAKNESSES_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def get_recent_weaknesses(n: int = 20) -> list:
+    """Get the N most recent self-identified weaknesses."""
+    try:
+        with open(WEAKNESSES_FILE) as f:
+            lines = f.readlines()
+        return [json.loads(l) for l in lines[-n:]]
+    except FileNotFoundError:
+        return []
+
+
+def save_stress_result(result: dict):
+    """Save the last stress test result for comparison."""
+    _ensure_dir()
+    result["ts"] = datetime.now().isoformat()
+    with open(LAST_STRESS_FILE, "w") as f:
+        json.dump(result, f, indent=2)
+
+
+def load_last_stress_result() -> dict | None:
+    """Load the last stress test result for comparison."""
+    try:
+        with open(LAST_STRESS_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+# ── Session Stats & Last Decision ────────────────────────────────────────────
+
+def get_last_decision() -> dict | None:
+    """Get the most recent routing decision."""
+    try:
+        with open(LOG_FILE) as f:
+            lines = f.readlines()
+        if lines:
+            return json.loads(lines[-1])
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def get_session_stats() -> dict:
+    """Get detailed session-level routing stats."""
+    stats = get_routing_stats()
+
+    # Count L1 vs L2 vs conversation from decisions log
+    l1_count = 0
+    l2_count = 0
+    conv_count = 0
+    route_times = []
+
+    try:
+        with open(LOG_FILE) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("l1"):
+                    l1_count += 1
+                elif d.get("l2"):
+                    l2_count += 1
+                elif d.get("final") == "conversation":
+                    conv_count += 1
+                if "route_ms" in d:
+                    route_times.append(d["route_ms"])
+    except FileNotFoundError:
+        pass
+
+    stats["l1_count"] = l1_count
+    stats["l2_count"] = l2_count
+    stats["conv_count"] = conv_count
+    stats["avg_route_ms"] = round(sum(route_times) / len(route_times), 2) if route_times else None
+
+    # Last stress test
+    last_stress = load_last_stress_result()
+    if last_stress:
+        stats["last_stress_result"] = {
+            "total": last_stress.get("total", 0),
+            "pass": last_stress.get("pass", 0),
+            "warn": last_stress.get("warn", 0),
+            "fail": last_stress.get("fail", 0),
+            "ts": last_stress.get("ts", ""),
+        }
+
+    return stats

@@ -153,14 +153,21 @@ def test_extra_patterns():
         ("X23", "Hello, do you remember what we discussed?", "memory_recall"),
 
         # Self-test routing
-        ("X24a", "Run a light test", "shell"),
-        ("X24b", "Hardcore stress test yourself", "shell"),
-        ("X24c", "Self test", "shell"),
+        ("X24a", "Run a light test", "self_test"),
+        ("X24b", "Hardcore stress test yourself", "self_test"),
+        ("X24c", "Self test", "self_test"),
+        ("X24g", "How are you performing", "self_test"),
+        ("X24h", "Run diagnostics", "self_test"),
 
-        # Monitor/profiler routing
-        ("X24d", "Show me your brain", "shell"),
-        ("X24e", "Run profiler", "shell"),
-        ("X24f", "System snapshot", "shell"),
+        # Brain snapshot routing
+        ("X24d", "Show me your brain", "brain_snapshot"),
+        ("X24e", "Run profiler", "brain_snapshot"),
+        ("X24f", "System snapshot", "brain_snapshot"),
+        ("X24i", "How did you route that", "brain_snapshot"),
+
+        # Self-improve routing
+        ("X24j", "Improve yourself", "self_improve"),
+        ("X24k", "Check for improvements", "self_improve"),
 
         # Should NOT route (conversation)
         ("X24", "Explain counterparty risk", None),

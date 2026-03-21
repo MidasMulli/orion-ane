@@ -289,6 +289,148 @@ def _message_claude(message: str, priority: str = "medium", context: str = "") -
     return {"status": "sent", "timestamp": timestamp, "priority": priority}
 
 
+# ── Self-Observation Tools ────────────────────────────────────────────────
+
+AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PYTHON = os.path.expanduser("~/.mlx-env/bin/python3")
+
+def _self_test(mode: str) -> dict:
+    """Run stress test, parse results, return structured summary.
+    Feeds failures back into correction log automatically via --json."""
+    if mode in ("hardcore", "full", "deep", "stress", "all"):
+        script = "live_stress_test.py"
+        timeout = 600
+    else:
+        script = "test_router.py"
+        timeout = 30
+
+    # For live_stress_test, use --json to get machine-readable output
+    if script == "live_stress_test.py":
+        cmd = f"{PYTHON} {script} --json"
+        try:
+            out = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=AGENT_DIR,
+            )
+            # --json mode outputs JSON to stdout
+            parsed = json.loads(out.stdout)
+            summary_parts = [f"{parsed['pass']}/{parsed['total']} pass"]
+            if parsed["warn"] > 0:
+                summary_parts.append(f"{parsed['warn']} warn")
+            if parsed["fail"] > 0:
+                summary_parts.append(f"{parsed['fail']} fail")
+            summary_parts.append(f"in {parsed['duration']}s")
+
+            # Comparison to last run
+            comp = parsed.get("comparison")
+            if comp:
+                if comp["regressed"]:
+                    summary_parts.append(f"REGRESSION: was {comp['prev_pass']}/{comp['prev_total']}")
+                elif comp["delta_pass"] > 0:
+                    summary_parts.append(f"improved +{comp['delta_pass']} from last run")
+                else:
+                    summary_parts.append("no regressions")
+
+            weaknesses = [t for t in parsed.get("tests", []) if t["status"] != "pass"]
+            result = {
+                "summary": ". ".join(summary_parts),
+                "total": parsed["total"],
+                "pass": parsed["pass"],
+                "warn": parsed["warn"],
+                "fail": parsed["fail"],
+                "duration": parsed["duration"],
+            }
+            if weaknesses:
+                result["weaknesses"] = [
+                    f"{w['id']}: {w['detail'][:80]}" for w in weaknesses[:5]
+                ]
+            return result
+        except subprocess.TimeoutExpired:
+            return {"error": f"Stress test timed out after {timeout}s"}
+        except (json.JSONDecodeError, KeyError) as e:
+            return {"error": f"Failed to parse test output: {e}"}
+    else:
+        # Light test — just run test_router.py and capture output
+        try:
+            out = subprocess.run(
+                f"{PYTHON} {script}", shell=True, capture_output=True,
+                text=True, timeout=timeout, cwd=AGENT_DIR,
+            )
+            # Extract result line like "53/53 (100%) — ALL PASS"
+            lines = out.stdout.strip().split("\n")
+            result_line = ""
+            for line in reversed(lines):
+                if "/" in line and "%" in line:
+                    # Strip ANSI codes
+                    clean = _re.sub(r'\033\[[0-9;]*m', '', line).strip()
+                    result_line = clean
+                    break
+            return {"summary": result_line or "Test complete", "output": out.stdout[-1000:]}
+        except subprocess.TimeoutExpired:
+            return {"error": f"Test timed out after {timeout}s"}
+
+
+def _brain_snapshot(scope: str) -> dict:
+    """Return current agent state for synthesis."""
+    from feedback_loop import get_last_decision, get_session_stats
+
+    if scope == "last":
+        last = get_last_decision()
+        if not last:
+            return {"summary": "No routing decisions logged yet this session."}
+        layer = "L1" if last.get("l1") else ("L2" if last.get("l2") else "conversation")
+        tool = last.get("final", "?")
+        msg = last.get("msg", "?")[:80]
+        return {
+            "summary": f"Last decision: '{msg}' -> {tool} via {layer}",
+            "input": msg,
+            "layer": layer,
+            "tool": tool,
+            "l1_match": last.get("l1"),
+            "l2_category": last.get("l2"),
+        }
+    else:
+        stats = get_session_stats()
+        total = stats.get("total_decisions", 0)
+        parts = [f"{total} decisions"]
+        parts.append(f"{stats.get('l1_count', 0)} L1, {stats.get('l2_count', 0)} L2, {stats.get('conv_count', 0)} conversation")
+        if stats.get("total_corrections", 0) > 0:
+            parts.append(f"{stats['total_corrections']} corrections")
+        else:
+            parts.append("zero corrections")
+        if stats.get("accuracy_pct") is not None:
+            parts.append(f"accuracy {stats['accuracy_pct']}%")
+        if stats.get("avg_route_ms") is not None:
+            parts.append(f"avg route {stats['avg_route_ms']}ms")
+
+        last_stress = stats.get("last_stress_result")
+        if last_stress:
+            parts.append(f"last stress test: {last_stress['pass']}/{last_stress['total']} ({last_stress.get('ts', '?')[:16]})")
+
+        return {
+            "summary": ". ".join(parts),
+            **stats,
+        }
+
+
+def _self_improve(mode: str) -> dict:
+    """Run router_improver.py, return analysis and proposals."""
+    try:
+        out = subprocess.run(
+            f"{PYTHON} router_improver.py --auto", shell=True,
+            capture_output=True, text=True, timeout=60, cwd=AGENT_DIR,
+        )
+        report_out = subprocess.run(
+            f"{PYTHON} router_improver.py --report", shell=True,
+            capture_output=True, text=True, timeout=30, cwd=AGENT_DIR,
+        )
+        # Strip ANSI codes from report
+        report = _re.sub(r'\033\[[0-9;]*m', '', report_out.stdout).strip()
+        return {"summary": report, "auto_output": out.stdout.strip()}
+    except subprocess.TimeoutExpired:
+        return {"error": "Improver timed out"}
+
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 
 def execute(tool_name: str, args: dict) -> str:
@@ -375,6 +517,14 @@ def _dispatch(name: str, args: dict) -> dict:
     # Claude inbox
     if name == "message_claude":
         return _message_claude(args.get("message", ""), args.get("priority", "medium"), args.get("context", ""))
+
+    # Self-test
+    if name == "self_test":
+        return _self_test(args.get("mode", "light"))
+    if name == "brain_snapshot":
+        return _brain_snapshot(args.get("scope", "session"))
+    if name == "self_improve":
+        return _self_improve(args.get("mode", "analyze"))
 
     # Shell
     if name == "shell":

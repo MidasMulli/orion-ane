@@ -62,6 +62,7 @@ TOOL_ICONS = {
     "browse_js": "⚙️", "browse_search": "🔎", "browse_x_feed": "🐦",
     "browse_tabs": "📑", "vault_read": "📖", "vault_insight": "🔮",
     "scan_digest": "📡", "message_claude": "📨", "shell": "⚡",
+    "self_test": "🧪", "brain_snapshot": "🧠", "self_improve": "🔄",
 }
 
 
@@ -236,6 +237,12 @@ def print_tool_call(name, args):
         label = f"playbook: {args.get('action', 'read')} {args.get('section', '')}"
     elif name == "message_claude":
         label = f"→ Claude: {args.get('message', '')[:50]}"
+    elif name == "self_test":
+        label = f"running {args.get('mode', 'light')} test..."
+    elif name == "brain_snapshot":
+        label = f"snapshot: {args.get('scope', 'session')}"
+    elif name == "self_improve":
+        label = "analyzing for improvements..."
     else:
         label = str(args)[:60]
     print(f"  {DIM}{icon} {label}{RESET}")
