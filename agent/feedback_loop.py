@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Decision logging and implicit feedback detection for the deterministic router.
 

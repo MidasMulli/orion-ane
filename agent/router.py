@@ -145,8 +145,8 @@ PATTERNS = [
     },
     # Playbook
     {
-        'keywords': ['playbook', 'update playbook', 'read playbook',
-                     'self-knowledge', 'improvement queue'],
+        'keywords': ['the playbook', 'my playbook', 'update playbook', 'read playbook',
+                     'show playbook', 'self-knowledge', 'improvement queue'],
         'tool': 'playbook_update',
         'extract': lambda msg: None,
         'args': lambda msg: {'section': 'full', 'action': 'read'},
