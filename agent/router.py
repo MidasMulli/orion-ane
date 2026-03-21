@@ -117,6 +117,27 @@ PATTERNS = [
                     'stats' if 'stats' in msg.lower() else 'latest'
         },
     },
+    # Self-test (must be before shell — specific pattern)
+    {
+        'keywords': ['stress test', 'run tests', 'test yourself', 'self test',
+                     'self-test', 'light test', 'hardcore test', 'deep test'],
+        'tool': 'shell',
+        'extract': lambda msg: ('~/.mlx-env/bin/python3 live_stress_test.py'
+                                if 'hardcore' in msg.lower() or 'deep' in msg.lower() or 'stress' in msg.lower()
+                                else '~/.mlx-env/bin/python3 test_router.py'),
+        'args': lambda msg: {'command': ('cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 live_stress_test.py'
+                                         if 'hardcore' in msg.lower() or 'deep' in msg.lower() or 'stress' in msg.lower()
+                                         else 'cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 test_router.py')},
+    },
+    # Monitor / profiler snapshot (must be before shell)
+    {
+        'keywords': ['brain monitor', 'show monitor', 'open monitor',
+                     'profiler', 'run profiler', 'show internals',
+                     'your brain', 'system snapshot'],
+        'tool': 'shell',
+        'extract': lambda msg: '~/.mlx-env/bin/python3 monitor.py --snapshot',
+        'args': lambda msg: {'command': 'cd /Users/midas/Desktop/cowork/orion-ane/agent && ~/.mlx-env/bin/python3 monitor.py --snapshot'},
+    },
     # Shell
     {
         'keywords': ['run command', 'execute command', 'shell command',

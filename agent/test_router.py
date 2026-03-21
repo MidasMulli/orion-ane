@@ -152,6 +152,16 @@ def test_extra_patterns():
         ("X22", "Hi, remember this: deadline is Friday", "memory_ingest"),
         ("X23", "Hello, do you remember what we discussed?", "memory_recall"),
 
+        # Self-test routing
+        ("X24a", "Run a light test", "shell"),
+        ("X24b", "Hardcore stress test yourself", "shell"),
+        ("X24c", "Self test", "shell"),
+
+        # Monitor/profiler routing
+        ("X24d", "Show me your brain", "shell"),
+        ("X24e", "Run profiler", "shell"),
+        ("X24f", "System snapshot", "shell"),
+
         # Should NOT route (conversation)
         ("X24", "Explain counterparty risk", None),
         ("X25", "What's the difference between CSA and ISDA?", None),

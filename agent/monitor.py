@@ -907,7 +907,75 @@ app.router.add_get('/', handle_index)
 app.router.add_get('/api/system', handle_system)
 app.router.add_get('/api/metrics', handle_metrics)
 
+def snapshot():
+    """Print current system + routing stats and exit. For Midas self-observation."""
+    sys_metrics = get_system_metrics()
+
+    lines = []
+    lines.append("=== PHANTOM MONITOR SNAPSHOT ===")
+    lines.append("")
+
+    # System
+    mem = sys_metrics.get("memory", {})
+    cpu = sys_metrics.get("cpu", {})
+    lines.append(f"Memory: {mem.get('used_gb', '?')}/{mem.get('total_gb', '?')} GB ({mem.get('pressure_pct', '?')}%) | Swap: {mem.get('swap_mb', 0):.0f} MB")
+    cpu_used = (cpu.get("user", 0) + cpu.get("system", 0))
+    lines.append(f"CPU: {cpu_used:.1f}% used | Idle: {cpu.get('idle', 0):.1f}%")
+
+    # Processes
+    procs = sys_metrics.get("processes", {})
+    mlx = procs.get("mlx_server")
+    if mlx:
+        lines.append(f"MLX Server: PID {mlx['pid']}, {mlx['rss_mb']:.0f} MB RSS, {mlx['cpu_pct']}% CPU")
+    else:
+        lines.append("MLX Server: NOT RUNNING")
+
+    # ANE
+    ane = sys_metrics.get("ane", {})
+    lines.append(f"ANE: {ane.get('status', 'unknown')}" + (f" ({ane.get('backend', '')})" if ane.get("backend") else ""))
+
+    # Routing stats (from feedback_loop)
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from feedback_loop import get_routing_stats
+        rs = get_routing_stats()
+        lines.append("")
+        lines.append("=== ROUTING ===")
+        total_d = rs.get("total_decisions", 0)
+        lines.append(f"Decisions: {total_d} | Corrections: {rs.get('total_corrections', 0)} | Confirmations: {rs.get('total_confirmations', 0)}")
+        if rs.get("accuracy_pct") is not None:
+            lines.append(f"Accuracy: {rs['accuracy_pct']}%")
+        most = rs.get("most_corrected", [])
+        if most:
+            lines.append(f"Most corrected: {', '.join(f'{t}({c})' for t, c in most)}")
+    except Exception:
+        pass
+
+    # Inference metrics
+    try:
+        if os.path.exists(METRICS_FILE):
+            with open(METRICS_FILE) as f:
+                m = json.load(f)
+            lines.append("")
+            lines.append("=== INFERENCE ===")
+            if m.get("latest"):
+                lat = m["latest"]
+                lines.append(f"Last gen: {lat.get('gen_tok_s', '?')} tok/s | Prompt: {lat.get('prompt_tok_s', '?')} tok/s | Latency: {lat.get('elapsed_s', '?')}s")
+            totals = m.get("session_totals", {})
+            if totals:
+                lines.append(f"Session: {totals.get('total_inferences', 0)} inferences, {totals.get('total_tokens', 0)} tokens")
+                lines.append(f"Avg gen: {totals.get('avg_gen_tok_s', '?')} tok/s | Peak: {totals.get('peak_gen_tok_s', '?')} tok/s")
+    except Exception:
+        pass
+
+    print("\n".join(lines))
+
+
 if __name__ == '__main__':
+    if "--snapshot" in sys.argv:
+        snapshot()
+        sys.exit(0)
+
     print(f"\033[36m  ╔══════════════════════════════╗\033[0m")
     print(f"\033[36m  ║   \033[1m◆ PHANTOM MONITOR ◆\033[0m\033[36m        ║\033[0m")
     print(f"\033[36m  ╚══════════════════════════════╝\033[0m")
