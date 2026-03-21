@@ -257,7 +257,7 @@ def _clean_response(text):
     text = re.sub(r'</?think>', '', text)
     for special in ['<|endoftext|>', '<|im_end|>', '<|im_start|>']:
         text = text.replace(special, '')
-    text = re.sub(r'\s*(user|assistant|system)\s*$', '', text)
+    text = re.sub(r'\n(user|assistant|system)\s*$', '', text)
     return text.strip()
 
 

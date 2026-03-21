@@ -2,6 +2,33 @@
 
 Two projects in one repo, both pushing Apple Silicon beyond what Apple intended.
 
+## [NAX Hardware Probe](nax-probe/) — First Public M5 Neural Accelerator Measurements
+
+Direct measurements of Apple's Neural Accelerators (NAX) inside M5 GPU cores. Probes the hardware via MLX's pre-compiled NAX kernels to measure throughput, batch verification plateau, fragment layout, and quantized kernel scaling.
+
+Key findings:
+- **12.19 TFLOPS FP16** peak (3.4× SIMD-only ceiling — NAX confirmed active)
+- **720 pre-compiled NAX kernels** in MLX metallib (dense + quantized 2-8 bit)
+- **Batch verification plateau:** 32 tokens costs 1.14-1.16x of 1 token on quantized 4-bit ops
+- **16×16 quad-interleaved fragment layout** mapped via `get_coord()` analysis
+- GatedDeltaNet SSM impact quantified: 31% sequential, breaks full-model plateau
+
+These measurements are the hardware evidence behind [four-path-mlx](https://github.com/MidasMulli/four-path-mlx)'s batch speculative decoding results. **[Full findings →](nax-probe/FINDINGS.md)**
+
+---
+
+## [Deterministic Agent Router](agent/) — Keyword Routing + Code-Constructed Tool Calls
+
+The Midas agent (agent_v2) uses a deterministic router instead of LLM tool selection:
+- **Layer 1:** Keyword pattern matching (12 groups, zero LLM calls)
+- **Layer 2:** LLM single-word classification (fallback)
+- **Layer 3:** Code-constructed tool execution (args built by code, not LLM)
+- **Layer 4:** LLM text synthesis only
+
+45/46 stress test pass (was 41/46 with LLM tool calling). The 9B model never sees tool definitions — it only generates text. See `agent/router.py`, `agent/tool_executor.py`, `agent/synthesizer.py`, `agent/agent_v2.py`.
+
+---
+
 ## [Phantom Memory](memory/) — Persistent Memory + Continuous Enrichment for Local LLMs
 
 Zero-cost persistent memory with a self-improving knowledge graph. Extracts facts, embeds them, stores in ChromaDB, writes to an Obsidian vault — then continuously enriches the vault in the background with five autonomous sweeps: reclassify, relate, stale-detect, pattern-find, and consolidate.
@@ -139,8 +166,19 @@ Key optimizations:
 │   ├── dashboard.py            # TUI monitoring dashboard
 │   ├── mcp_server.py           # MCP server wrapper
 │   └── scale_test.py           # Scalability benchmarks
+├── nax-probe/
+│   ├── FINDINGS.md             # NAX hardware measurements (throughput, batch plateau, layout)
+│   ├── probe_mlx.py            # MLX-based NAX probe (7 tests, all pass)
+│   ├── probe.metal             # Metal compute shaders (ready when Apple fixes toolchain)
+│   ├── main.swift              # Swift harness for Metal probe
+│   ├── analyze.py              # Structural analysis of quad-interleaved layout
+│   └── build.sh                # Build/run script
 ├── agent/
-│   ├── agent.py                # Phantom agent (Midas) — tools, boot, conversation loop
+│   ├── agent_v2.py             # Midas agent v2 — deterministic router architecture
+│   ├── router.py               # Layer 1+2 keyword/LLM routing (47 unit tests)
+│   ├── tool_executor.py        # Layer 3 code-constructed tool dispatch
+│   ├── synthesizer.py          # Layer 4 LLM text synthesis only
+│   ├── agent.py                # Phantom agent v1 (legacy — LLM tool calling)
 │   ├── browser.py              # Chrome CDP client for authenticated browsing
 │   └── monitor.py              # System performance dashboard
 ├── api_exploration.m           # Initial ANE API discovery
@@ -299,7 +337,8 @@ MIT — see [LICENSE](LICENSE)
 ## Related
 
 - [dual-path-inference](https://github.com/MidasMulli/dual-path-inference) — Initial GPU+ANE concurrency proof-of-concept (archived, evolved into this repo)
-- [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — Multi-source speculative decoding server using N-gram + PLD + ANE + GPU
+- [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — Multi-source speculative decoding server (2-6.2x on EDGAR filings) — the inference-level results that the NAX hardware data explains
 - [gdn-coreml](https://github.com/MidasMulli/gdn-coreml) — GatedDeltaNet SSM to CoreML converter for same-family ANE drafting
+- [ane-perf](https://github.com/MidasMulli/ane-perf) — ANE hardware performance characterization via IOReport bandwidth histograms
 
 
