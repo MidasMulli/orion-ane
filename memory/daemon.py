@@ -352,18 +352,26 @@ class MemoryStore:
             batch_size=32,
         )
 
-        # Filter duplicates
+        # Filter duplicates and detect contradictions
         ids, docs, embs, metas = [], [], [], []
         for fact, emb in zip(facts, embeddings):
             if self._counter > 0 and self._is_duplicate(emb):
                 continue
+
+            # Check for contradictions (same logic as single store())
+            superseded_ids = []
+            if self._counter > 0:
+                superseded_ids = self._check_contradictions(emb, fact)
 
             self._counter += 1
             fact_id = f"fact_{self._counter}_{int(time.time())}"
             ids.append(fact_id)
             docs.append(fact["text"])
             embs.append(emb.tolist())
-            metas.append(self._make_metadata(fact))
+            meta = self._make_metadata(fact)
+            if superseded_ids:
+                meta["supersedes"] = json.dumps(superseded_ids)
+            metas.append(meta)
 
         if not ids:
             return []

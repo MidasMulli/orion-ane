@@ -5,6 +5,38 @@ Layer 2 uses LLM only for single-word classification.
 
 import re
 
+# ── SCGP helpers ────────────────────────────────────────────────────────────
+
+def _extract_entity_name(msg):
+    """Extract entity name from message like 'what do we know about Goldman Sachs'."""
+    lower = msg.lower()
+    for prefix in ['what do we know about', 'build dossier for', 'counterparty dossier for',
+                   'counterparty intel on', 'counterparty intelligence on',
+                   'look up entity', 'check gleif for', 'lei lookup for', 'search gleif for',
+                   'find lei for', 'entity lookup for', 'company dossier for',
+                   'counterparty profile for', 'look up', 'check gleif', 'lei lookup',
+                   'find lei']:
+        if prefix in lower:
+            idx = lower.index(prefix) + len(prefix)
+            name = msg[idx:].strip().rstrip('?.,!')
+            # Strip trailing qualifiers like "on GLEIF", "in EDGAR"
+            name = re.sub(r'\s+(?:on|in|from|via)\s+(?:gleif|edgar|sec)\s*$', '', name, flags=re.I)
+            if name:
+                return name
+    # Fallback: take the last quoted string or capitalized words
+    quoted = re.findall(r'"([^"]+)"', msg)
+    if quoted:
+        return quoted[-1]
+    # Take trailing proper nouns (capitalized words)
+    words = msg.split()
+    proper = []
+    for w in reversed(words):
+        if w[0].isupper() and w.lower() not in ('what', 'who', 'how', 'can', 'the', 'a', 'an', 'is'):
+            proper.insert(0, w)
+        elif proper:
+            break
+    return ' '.join(proper) if proper else msg
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def strip_greeting(text):
@@ -28,6 +60,9 @@ def extract_vault_path(msg):
     if 'decision log' in lower or 'decision' in lower: return 'Decision Log.md'
     if 'infrastructure' in lower: return 'Infrastructure Map.md'
     if 'home' in lower: return 'HOME.md'
+    if any(k in lower for k in ['working on', 'been doing', 'project status',
+                                  'current projects', 'what are we building']):
+        return 'Roadmap.md'
     match = re.search(r'([\w/-]+\.md)', msg)
     return match.group(1) if match else ''
 
@@ -99,7 +134,9 @@ PATTERNS = [
         'keywords': ['check vault', 'read vault', 'vault read', 'from the vault',
                      'in the vault', 'read the roadmap', 'read the decision',
                      'infrastructure map', 'check roadmap', 'use vault_read',
-                     'check the vault', 'the vault'],
+                     'check the vault', 'the vault',
+                     'working on', 'been doing', 'project status',
+                     'what are we building', 'current projects'],
         'tool': 'vault_read',
         'extract': lambda msg: extract_vault_path(msg),
         'args': lambda msg: {'path': extract_vault_path(msg)},
@@ -148,6 +185,15 @@ PATTERNS = [
         'args': lambda msg: {'scope': 'last' if any(w in msg.lower()
                       for w in ['last', 'that', 'previous']) else 'session'},
     },
+    # Heartbeat dashboard
+    {
+        'keywords': ['heartbeat', 'open heartbeat', 'launch heartbeat',
+                     'open dashboard', 'launch dashboard', 'show dashboard',
+                     'system dashboard', 'monitoring dashboard'],
+        'tool': 'heartbeat',
+        'extract': lambda msg: None,
+        'args': lambda msg: {},
+    },
     # Self-improve (first-class tool)
     {
         'keywords': ['improve yourself', 'optimize yourself', 'run improver',
@@ -164,7 +210,36 @@ PATTERNS = [
         'extract': lambda msg: extract_command(msg),
         'args': lambda msg: {'command': extract_command(msg)},
     },
-    # Search (web) — must be after more specific patterns
+    # SCGP: counterparty dossier (must be before registry and search — "what do we know about" is pipeline)
+    {
+        'keywords': ['counterparty dossier', 'what do we know about', 'build dossier',
+                     'entity dossier', 'company dossier', 'counterparty profile',
+                     'counterparty intel', 'counterparty intelligence'],
+        'tool': 'scgp_pipeline',
+        'extract': lambda msg: _extract_entity_name(msg),
+        'args': lambda msg: {'entity_name': _extract_entity_name(msg)},
+    },
+    # SCGP: GLEIF / LEI lookup (before search — "look up" + "gleif"/"lei" is SCGP, not web search)
+    {
+        'keywords': ['gleif', 'lei lookup', 'gleif search',
+                     'search gleif', 'find lei', 'entity lookup', 'look up entity'],
+        'tool': 'scgp_registry',
+        'extract': lambda msg: _extract_entity_name(msg),
+        'args': lambda msg: {'entity_name': _extract_entity_name(msg)},
+    },
+    # SCGP: ISDA extraction / classification
+    {
+        'keywords': ['classify counterparty', 'entity classification', 'classify entity',
+                     'counterparty classification', 'extract isda', 'agreement provisions',
+                     'extract provisions', 'isda extraction', 'parse isda',
+                     'extract agreement', 'classify this counterparty'],
+        'tool': 'scgp_convert',
+        'extract': lambda msg: None,
+        'args': lambda msg: {'schema': 'agreement_provision' if any(
+            k in msg.lower() for k in ['extract', 'provision', 'isda', 'parse', 'agreement']
+        ) else 'counterparty_intelligence'},
+    },
+    # Search (web) — must be after more specific patterns (SCGP, memory, vault)
     {
         'keywords': ['search for', 'search google', 'google ', 'look up',
                      'find out about', 'latest news on', 'current price of',
@@ -220,6 +295,7 @@ def layer2_classify(message, llm_fn):
         "MEMORY_STORE = user wants to save/remember something\n"
         "MEMORY_RECALL = user asks about past conversations\n"
         "VAULT = user asks about project docs/roadmap\n"
+        "SCGP = counterparty lookup, GLEIF/LEI search, ISDA extraction, entity dossier\n"
         "CONVERSATION = general questions, definitions, analysis, opinions\n"
         f"\nMessage: \"{message}\"\n"
         "Category:"
@@ -228,7 +304,7 @@ def layer2_classify(message, llm_fn):
     result = llm_fn(prompt, max_tokens=8, temperature=0.0)
     category = result.strip().upper().split()[0] if result.strip() else "CONVERSATION"
 
-    valid = ('SEARCH', 'MEMORY_STORE', 'MEMORY_RECALL', 'VAULT', 'CONVERSATION')
+    valid = ('SEARCH', 'MEMORY_STORE', 'MEMORY_RECALL', 'VAULT', 'SCGP', 'CONVERSATION')
     if category not in valid:
         return 'CONVERSATION'
 
@@ -258,5 +334,7 @@ def route(message, llm_fn=None):
             return ('memory_recall', {'query': extract_query(message)})
         elif category == 'VAULT':
             return ('vault_read', {'path': extract_vault_path(message)})
+        elif category == 'SCGP':
+            return ('scgp_pipeline', {'entity_name': _extract_entity_name(message)})
 
     return ('conversation', {})

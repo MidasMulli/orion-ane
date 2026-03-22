@@ -280,6 +280,7 @@ Optional for ANE tier:
 - [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — Speculative decoding server that uses this memory system
 - [dual-path-inference](https://github.com/MidasMulli/dual-path-inference) — Initial GPU+ANE concurrency proof-of-concept (archived)
 - [gdn-coreml](https://github.com/MidasMulli/gdn-coreml) — GatedDeltaNet SSM to CoreML converter
+- [ane-perf](https://github.com/MidasMulli/ane-perf) — ANE hardware performance characterization via IOReport bandwidth histograms
 
 ## License
 

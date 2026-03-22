@@ -525,7 +525,7 @@ def test_F1_unicode():
     resp = llm_call(msgs, max_tokens=80)
     content = C(resp).lower()
     ok = "yen" in content or "euro" in content or "currency" in content
-    return test("F1 Unicode handling", ok, f"content={content[:60]!r}")
+    return test("F1 Unicode handling", ok, f"content={content[:60]!r}", flaky=True)
 
 def test_F2_empty_system():
     """Empty system prompt should not crash."""

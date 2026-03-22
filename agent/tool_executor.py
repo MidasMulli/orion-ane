@@ -370,6 +370,36 @@ def _self_test(mode: str) -> dict:
             return {"error": f"Test timed out after {timeout}s"}
 
 
+def _launch_heartbeat() -> dict:
+    """Launch the Heartbeat monitoring dashboard if not already running."""
+    import urllib.request
+    try:
+        urllib.request.urlopen("http://localhost:8423/api/all", timeout=2)
+        return {"status": "already running", "url": "http://localhost:8423"}
+    except Exception:
+        pass
+    heartbeat_path = os.path.join(os.path.dirname(__file__), "heartbeat.py")
+    if not os.path.exists(heartbeat_path):
+        return {"error": "heartbeat.py not found"}
+    subprocess.Popen(
+        [sys.executable, heartbeat_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    # Wait briefly for it to start
+    import time
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            urllib.request.urlopen("http://localhost:8423/api/all", timeout=1)
+            # Open in browser on macOS
+            subprocess.Popen(["open", "http://localhost:8423"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"status": "launched", "url": "http://localhost:8423"}
+        except Exception:
+            continue
+    return {"error": "Heartbeat started but not responding yet. Check http://localhost:8423"}
+
+
 def _brain_snapshot(scope: str) -> dict:
     """Return current agent state for synthesis."""
     from feedback_loop import get_last_decision, get_session_stats
@@ -431,6 +461,95 @@ def _self_improve(mode: str) -> dict:
         return {"error": "Improver timed out"}
 
 
+# ── SCGP (Standardized Counterparty Graph Protocol) ─────────────────────────
+
+SCGP_PATH = "/Users/midas/Desktop/cowork"
+
+def _scgp_convert(args):
+    """Run SCGP extraction on provided text."""
+    _sys = __import__('sys')
+    if SCGP_PATH not in _sys.path:
+        _sys.path.insert(0, SCGP_PATH)
+    from scgp.pipeline import run
+
+    schema = args.get('schema', 'agreement_provision')
+    source_text = args.get('source_text', '')
+    if not source_text:
+        return {"error": "No source text provided. Upload a document or paste text to extract from."}
+
+    result = run(source_text, schema)
+    return result
+
+
+def _scgp_registry(args):
+    """Look up entity in GLEIF registry."""
+    _sys = __import__('sys')
+    if SCGP_PATH not in _sys.path:
+        _sys.path.insert(0, SCGP_PATH)
+    from scgp.sources.gleif import search_entity, get_parent_chain
+
+    name = args.get('entity_name', '')
+    if not name:
+        return {"error": "No entity name provided."}
+
+    results = search_entity(name, limit=3)
+    if not results:
+        return {"error": f"No GLEIF results for '{name}'"}
+
+    top = results[0]
+    parents = []
+    if top.get('lei'):
+        try:
+            parents = get_parent_chain(top['lei'])
+        except Exception:
+            pass
+
+    return {
+        "entity": top,
+        "parent_chain": parents,
+        "total_matches": len(results),
+    }
+
+
+def _scgp_pipeline(args):
+    """Full SCGP pipeline: EDGAR + GLEIF + extraction."""
+    _sys = __import__('sys')
+    if SCGP_PATH not in _sys.path:
+        _sys.path.insert(0, SCGP_PATH)
+    from scgp.sources.gleif import search_entity, get_parent_chain
+    from scgp.sources.edgar import search_filings
+
+    name = args.get('entity_name', '')
+    if not name:
+        return {"error": "No entity name provided."}
+
+    # GLEIF lookup
+    gleif_results = search_entity(name, limit=3)
+    gleif_top = gleif_results[0] if gleif_results else None
+
+    parents = []
+    if gleif_top and gleif_top.get('lei'):
+        try:
+            parents = get_parent_chain(gleif_top['lei'])
+        except Exception:
+            pass
+
+    # EDGAR search
+    edgar_results = []
+    try:
+        edgar_results = search_filings(name, filing_type="10-K", limit=3)
+    except Exception:
+        pass
+
+    return {
+        "entity_name": name,
+        "gleif": gleif_top,
+        "parent_chain": parents,
+        "edgar_filings": edgar_results[:3],
+        "source": "scgp_pipeline",
+    }
+
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 
 def execute(tool_name: str, args: dict) -> str:
@@ -446,6 +565,10 @@ def execute(tool_name: str, args: dict) -> str:
         return "Error: Empty search query. Provide a specific query."
     if tool_name == "browse_navigate" and not args.get("url", "").startswith("http"):
         return f"Error: Invalid URL: {args.get('url', '')}. Must start with http(s)."
+    if tool_name in ("scgp_registry", "scgp_pipeline") and not args.get("entity_name", "").strip():
+        return "Error: No entity name provided."
+    if tool_name == "scgp_convert" and not args.get("source_text", "").strip():
+        return "Error: No source text provided. Upload a document or paste text to extract from."
 
     try:
         result = _dispatch(tool_name, args)
@@ -489,6 +612,8 @@ def _dispatch(name: str, args: dict) -> dict:
         return _vault_insight(args.get("topic", ""))
 
     # Browser
+    if name.startswith("browse_") and not _browser:
+        return {"error": "Browser not available. Chrome CDP is only accessible from the local terminal, not Telegram."}
     if name == "browse_navigate":
         return _browser.navigate(args.get("url", ""), args.get("wait", 2))
     if name == "browse_read":
@@ -518,6 +643,10 @@ def _dispatch(name: str, args: dict) -> dict:
     if name == "message_claude":
         return _message_claude(args.get("message", ""), args.get("priority", "medium"), args.get("context", ""))
 
+    # Heartbeat dashboard
+    if name == "heartbeat":
+        return _launch_heartbeat()
+
     # Self-test
     if name == "self_test":
         return _self_test(args.get("mode", "light"))
@@ -525,6 +654,14 @@ def _dispatch(name: str, args: dict) -> dict:
         return _brain_snapshot(args.get("scope", "session"))
     if name == "self_improve":
         return _self_improve(args.get("mode", "analyze"))
+
+    # SCGP
+    if name == "scgp_convert":
+        return _scgp_convert(args)
+    if name == "scgp_registry":
+        return _scgp_registry(args)
+    if name == "scgp_pipeline":
+        return _scgp_pipeline(args)
 
     # Shell
     if name == "shell":

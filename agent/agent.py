@@ -403,45 +403,57 @@ class MemoryBridge:
         }
 
     def get_insights(self) -> dict:
-        """Read latest enricher insights from the vault."""
+        """Read latest enricher insights from the vault.
+        Returns a pre-formatted summary — 9B can't synthesize raw data."""
         if not self._started:
             return {"error": "daemon not started"}
 
         vault_path = self.daemon.vault.vault_path
-        result = {"enricher_running": self.daemon.enricher is not None}
+        lines = []
 
-        # Enricher stats
-        if self.daemon.enricher:
-            result["enricher_stats"] = self.daemon.enricher.stats
+        # Enricher status — check launchd heartbeat (enricher runs as separate service)
+        heartbeat_path = os.path.join(vault_path, "midas", ".enricher_heartbeat")
+        enricher_running = False
+        if os.path.exists(heartbeat_path):
+            try:
+                with open(heartbeat_path) as f:
+                    ts = f.read().strip()
+                from datetime import datetime
+                hb_time = datetime.fromisoformat(ts)
+                age_min = (datetime.now() - hb_time).total_seconds() / 60
+                enricher_running = age_min < 10  # consider alive if heartbeat < 10 min old
+                lines.append(f"Enricher: {'running' if enricher_running else 'stale'} (last heartbeat {age_min:.0f} min ago)")
+            except Exception:
+                lines.append("Enricher: unknown (heartbeat unreadable)")
+        else:
+            lines.append("Enricher: not running (no heartbeat file)")
 
-        # Read relationships summary
+        # Relationship count
         rel_path = os.path.join(vault_path, "memory", "relationships.md")
         if os.path.exists(rel_path):
             with open(rel_path, "r") as f:
-                content = f.read()
-            # Extract just entity headers and their connections (not full file)
-            lines = content.split("\n")
-            summary = []
-            for line in lines:
-                if line.startswith("## ") or (line.startswith("- ") and "shared facts" in line):
-                    summary.append(line)
-            result["relationships"] = "\n".join(summary[:50])  # top 50 lines
+                rel_count = f.read().count("## ")
+            lines.append(f"Relationships: {rel_count} entities mapped")
 
-        # Read latest pattern insights
+        # Latest pattern insights — just section headers
         insights_dir = os.path.join(vault_path, "memory", "insights")
         if os.path.exists(insights_dir):
             files = sorted([f for f in os.listdir(insights_dir) if f.startswith("patterns-")], reverse=True)
             if files:
                 with open(os.path.join(insights_dir, files[0]), "r") as f:
-                    result["patterns"] = f.read()
+                    content = f.read()
+                # Extract just the ## headers as a summary
+                headers = [l.replace("## ", "").strip() for l in content.split("\n") if l.startswith("## ")]
+                if headers:
+                    lines.append(f"Today's insights ({files[0]}): {', '.join(headers[:5])}")
 
-            # Read latest stale insights
             stale_files = sorted([f for f in os.listdir(insights_dir) if f.startswith("stale-")], reverse=True)
             if stale_files:
                 with open(os.path.join(insights_dir, stale_files[0]), "r") as f:
-                    result["stale"] = f.read()
+                    stale_count = f.read().count("- ")
+                lines.append(f"Stale items flagged: {stale_count}")
 
-        return result
+        return {"summary": "\n".join(lines)}
 
     def stop(self):
         if self._started and self.daemon:
@@ -511,8 +523,14 @@ def scan_digest_tool(mode: str = "latest", top_n: int = 10) -> dict:
         return {"error": "Scanner module not available"}
 
     if mode == "latest":
-        items = scanner.get_latest_candidates(top_n)
-        return {"mode": "latest", "count": len(items), "items": items}
+        items = scanner.get_latest_candidates(min(top_n, 5))  # cap at 5 for 9B context
+        # Pre-format as numbered text — 9B regurgitates JSON lists instead of synthesizing
+        lines = []
+        for i, item in enumerate(items, 1):
+            title = (item.get("title") or "")[:150]
+            source = item.get("source", "")
+            lines.append(f"{i}. {title} ({source})")
+        return {"summary": f"{len(items)} candidates:\n" + "\n".join(lines)}
     elif mode == "unreviewed":
         unreviewed = scanner.get_unreviewed()
         return {"mode": "unreviewed", "scans": unreviewed, "count": len(unreviewed)}
@@ -534,15 +552,14 @@ def scan_digest_tool(mode: str = "latest", top_n: int = 10) -> dict:
                             all_items.append(item)
             except Exception:
                 continue
-        # Sort by relevance
+        # Sort by relevance, pre-format as text for 9B
         all_items.sort(key=lambda x: x.get("relevance", 0) + x.get("score", 0) / 1000, reverse=True)
-        return {
-            "mode": "clear",
-            "scans_processed": len(unreviewed),
-            "unique_items": len(all_items),
-            "top_items": all_items[:top_n],
-            "note": "These are pre-scraped from HN/RSS/Reddit. Summarize the top items for the user."
-        }
+        lines = []
+        for i, item in enumerate(all_items[:min(top_n, 5)], 1):
+            title = (item.get("title") or "")[:150]
+            source = item.get("source", "")
+            lines.append(f"{i}. {title} ({source})")
+        return {"summary": f"Processed {len(unreviewed)} scans, {len(all_items)} unique items. Top {min(top_n, 5)}:\n" + "\n".join(lines)}
     elif mode == "verdicts":
         verdicts = scanner.read_verdicts()
         return {"mode": "verdicts", "count": len(verdicts), "verdicts": verdicts}
@@ -639,7 +656,15 @@ def execute_tool(name: str, args: dict) -> str:
     except Exception as e:
         result = {"error": str(e)}
 
-    return json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
+    # Prefer plain text over JSON — 9B regurgitates JSON instead of synthesizing it.
+    # Tools that return {"summary": "..."} get the summary as plain text.
+    if isinstance(result, dict):
+        if "summary" in result and len(result) <= 2:
+            return result["summary"]
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    return str(result)
 
 
 # ── Terminal UI ─────────────────────────────────────────────────────────────
@@ -916,10 +941,10 @@ def print_tool_result(name: str, result: str):
         n = len(data.get("results", []))
         print(f"  {DIM}  └─ found {n} results{RESET}")
     elif name == "memory_insights" and isinstance(data, dict):
-        has_patterns = "patterns" in data
-        has_rel = "relationships" in data
-        enricher = "running" if data.get("enricher_running") else "off"
-        print(f"  {DIM}  └─ enricher {enricher} | patterns: {'✓' if has_patterns else '✗'} | relationships: {'✓' if has_rel else '✗'}{RESET}")
+        summary = data.get("summary", "")
+        # Extract enricher status from first line of summary
+        first_line = summary.split("\n")[0] if summary else "no data"
+        print(f"  {DIM}  └─ {first_line}{RESET}")
     elif name == "browse_navigate" and isinstance(data, dict):
         title = data.get("title", "")[:40]
         if data.get("auth_wall"):
@@ -1131,8 +1156,9 @@ def run_agent():
         lg.setLevel(logging.CRITICAL)
         lg.propagate = False
 
-    # Connect to MLX server (with timeout so boot doesn't hang if server is down)
-    client = OpenAI(base_url=MLX_BASE_URL, api_key="not-needed", timeout=10.0)
+    # Connect to MLX server — timeout covers full generation, not just connection.
+    # Large tool results (30 scan items) can cause 10s+ prefill on 9B.
+    client = OpenAI(base_url=MLX_BASE_URL, api_key="not-needed", timeout=120.0)
 
     # Suppress stdout/stderr noise during boot
     logging.disable(logging.CRITICAL)
@@ -1403,6 +1429,10 @@ def run_agent():
                     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
                     content = re.sub(r'<think>.*$', '', content, flags=re.DOTALL)
                     content = re.sub(r'</?think>', '', content)
+                    # Strip leaked special tokens (server should catch these, but safety net)
+                    for special in ['<|endoftext|>', '<|im_end|>', '<|im_start|>']:
+                        content = content.replace(special, '')
+                    content = re.sub(r'\s*(user|assistant|system)\s*$', '', content)
                     content = content.strip()
                     # Detect and truncate repetition degeneration
                     content = _truncate_repetition(content)
@@ -1419,6 +1449,15 @@ def run_agent():
                     tool_rounds += 1
                     continue
 
+                # Collapse tool call chain into just the final response.
+                # Old tool_call + tool result messages bloat context and cause
+                # the 9B to regurgitate raw JSON instead of synthesizing.
+                if tool_rounds > 0:
+                    # Walk backwards, remove all tool/assistant-with-tool-calls messages from this turn
+                    while messages and messages[-1].get("role") in ("tool",) or (
+                        messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls")
+                    ):
+                        messages.pop()
                 messages.append({"role": "assistant", "content": content or ""})
                 break
 

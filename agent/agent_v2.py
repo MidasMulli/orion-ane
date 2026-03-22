@@ -36,6 +36,7 @@ from router import route, layer1_route, layer2_classify
 from tool_executor import execute, set_memory, set_browser
 from synthesizer import synthesize, SYSTEM_PROMPT
 from feedback_loop import log_decision, detect_feedback, log_correction, get_routing_stats
+from memory_bridge import MemoryBridge
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
@@ -63,100 +64,15 @@ TOOL_ICONS = {
     "browse_tabs": "📑", "vault_read": "📖", "vault_insight": "🔮",
     "scan_digest": "📡", "message_claude": "📨", "shell": "⚡",
     "self_test": "🧪", "brain_snapshot": "🧠", "self_improve": "🔄",
+    "heartbeat": "💓",
+    "scgp_convert": "📄", "scgp_registry": "🏛️", "scgp_pipeline": "📋",
 }
 
 
 # ── Memory & Browser (singletons) ───────────────────────────────────────────
 
-class MemoryBridge:
-    """Direct Python bridge to the memory daemon."""
 
-    def __init__(self):
-        self.daemon = None
-        self._started = False
-
-    def start(self):
-        try:
-            from phantom_memory.daemon import MemoryDaemon
-        except ImportError:
-            daemon_dir = os.path.join(os.path.dirname(__file__), "..", "memory")
-            sys.path.insert(0, os.path.abspath(daemon_dir))
-            from daemon import MemoryDaemon
-
-        db_path = os.path.join(os.path.dirname(__file__), "..", "memory", "chromadb_live")
-        self.daemon = MemoryDaemon(
-            vault_path=VAULT_PATH, db_path=db_path,
-            enable_enricher=True, enricher_interval=300,
-        )
-        self.daemon.start()
-        self._started = True
-
-    def ingest(self, role, text):
-        if not self._started:
-            return {"error": "daemon not started"}
-        self.daemon.ingest(role, text)
-        time.sleep(0.3)
-        s = self.daemon.stats
-        return {"status": "stored", "extracted": s["extracted"],
-                "stored": s["stored"], "total_memories": s["total_memories"]}
-
-    def recall(self, query, n_results=5, type_filter=""):
-        if not self._started:
-            return {"error": "daemon not started"}
-        fv = type_filter if type_filter in ("decision", "task", "preference", "quantitative", "general") else None
-        memories = self.daemon.store.recall(query, n_results=n_results, type_filter=fv)
-        results = []
-        for m in memories:
-            meta = m["metadata"]
-            results.append({
-                "text": m["text"], "type": meta.get("type", "unknown"),
-                "score": round(m["score"], 3),
-                "entities": json.loads(meta.get("entities", "[]")),
-                "timestamp": meta.get("timestamp", ""),
-            })
-        return {"query": query, "results": results, "total_memories": self.daemon.store.count()}
-
-    def stats(self):
-        if not self._started:
-            return {"error": "daemon not started"}
-        s = self.daemon.stats
-        return {"session": self.daemon.session_id, "ingested": s["ingested"],
-                "extracted": s["extracted"], "stored": s["stored"],
-                "deduped": s["deduped"], "superseded": s.get("superseded", 0),
-                "total_memories": s["total_memories"]}
-
-    def get_insights(self):
-        if not self._started:
-            return {"error": "daemon not started"}
-        vault_path = self.daemon.vault.vault_path
-        lines = []
-        heartbeat_path = os.path.join(vault_path, "midas", ".enricher_heartbeat")
-        if os.path.exists(heartbeat_path):
-            try:
-                with open(heartbeat_path) as f:
-                    ts = f.read().strip()
-                hb_time = datetime.fromisoformat(ts)
-                age_min = (datetime.now() - hb_time).total_seconds() / 60
-                lines.append(f"Enricher: {'running' if age_min < 10 else 'stale'} (heartbeat {age_min:.0f}m ago)")
-            except Exception:
-                lines.append("Enricher: unknown")
-        rel_path = os.path.join(vault_path, "memory", "relationships.md")
-        if os.path.exists(rel_path):
-            with open(rel_path) as f:
-                lines.append(f"Relationships: {f.read().count('## ')} entities")
-        insights_dir = os.path.join(vault_path, "memory", "insights")
-        if os.path.exists(insights_dir):
-            files = sorted([f for f in os.listdir(insights_dir) if f.startswith("patterns-")], reverse=True)
-            if files:
-                with open(os.path.join(insights_dir, files[0])) as f:
-                    headers = [l.replace("## ", "").strip() for l in f if l.startswith("## ")]
-                if headers:
-                    lines.append(f"Insights ({files[0]}): {', '.join(headers[:5])}")
-        return {"summary": "\n".join(lines)}
-
-    def stop(self):
-        if self._started and self.daemon:
-            self.daemon.stop()
+# MemoryBridge imported from memory_bridge.py (shared with telegram_bot)
 
 
 memory = MemoryBridge()
@@ -241,8 +157,17 @@ def print_tool_call(name, args):
         label = f"running {args.get('mode', 'light')} test..."
     elif name == "brain_snapshot":
         label = f"snapshot: {args.get('scope', 'session')}"
+    elif name == "heartbeat":
+        label = "launching heartbeat dashboard..."
     elif name == "self_improve":
         label = "analyzing for improvements..."
+    elif name == "scgp_convert":
+        schema = args.get("schema", "agreement_provision")
+        label = f"SCGP extract: {schema}"
+    elif name == "scgp_registry":
+        label = f"GLEIF lookup: {args.get('entity_name', '')}"
+    elif name == "scgp_pipeline":
+        label = f"counterparty dossier: {args.get('entity_name', '')}"
     else:
         label = str(args)[:60]
     print(f"  {DIM}{icon} {label}{RESET}")
@@ -258,6 +183,25 @@ def _clean_response(text):
     for special in ['<|endoftext|>', '<|im_end|>', '<|im_start|>']:
         text = text.replace(special, '')
     text = re.sub(r'\n(user|assistant|system)\s*$', '', text)
+
+    # Truncate repetition loops: if any 8+ word phrase repeats 3+ times, cut at second occurrence
+    words = text.split()
+    for phrase_len in range(8, 4, -1):
+        for i in range(len(words) - phrase_len):
+            phrase = ' '.join(words[i:i + phrase_len])
+            rest = ' '.join(words[i + phrase_len:])
+            count = rest.count(phrase)
+            if count >= 2:
+                # Cut at the start of the second repetition
+                first_end = text.find(phrase) + len(phrase)
+                second_start = text.find(phrase, first_end)
+                if second_start > 0:
+                    text = text[:second_start].rstrip()
+                    break
+        else:
+            continue
+        break
+
     return text.strip()
 
 
@@ -519,6 +463,16 @@ def run_agent():
             print_tool_call(tool_name, tool_args)
             result = execute(tool_name, tool_args)
             print(f"  {DIM}  └─ done{RESET}")
+
+            # Short-circuit tools that return direct messages (skip 9B synthesis)
+            if tool_name == "heartbeat" and isinstance(result, dict):
+                status = result.get("status", "")
+                url = result.get("url", "http://localhost:8423")
+                msg = f"Heartbeat {'already running' if 'already' in status else 'launched'} at {url}"
+                print(f"\n{CYAN}{msg}{RESET}\n")
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "assistant", "content": msg})
+                continue
 
             # ── LAYER 4: Synthesize tool result ──
             response = synthesize(

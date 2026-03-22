@@ -8,7 +8,7 @@ against the live four-path server on port 8899.
 Maps to all 46 cases from stress_test.py:
   A. Infrastructure (7) — direct checks, no agent needed
   B. Conversation (7) — router→synthesizer (no tool)
-  C. Tool Routing (9) — router→executor→synthesizer
+  C. Tool Routing (16) — router→executor→synthesizer (9 core + 7 SCGP)
   D. Server Integrity (6) — direct server checks
   E. Four-Path Performance (5) — direct server checks
   F. Edge Cases (5) — direct server checks
@@ -274,6 +274,21 @@ def test_C():
     # C9: No tool
     tool_name, tool_args = route("What does OTC stand for?", llm_fn=llm_classify)
     test("C9 No tool (simple question)", tool_name == "conversation", f"got={tool_name}")
+
+    # ── SCGP routing tests ──
+    scgp_cases = [
+        ("C10", "Look up JPMorgan Chase on GLEIF", "scgp_registry"),
+        ("C11", "Extract provisions from this ISDA agreement", "scgp_convert"),
+        ("C12", "What do we know about Goldman Sachs", "scgp_pipeline"),
+        ("C13", "Build a counterparty dossier for Citadel Securities", "scgp_pipeline"),
+        ("C14", "Check GLEIF for Bank of America", "scgp_registry"),
+        ("C15", "Classify this counterparty entity", "scgp_convert"),
+        ("C16", "LEI lookup for Morgan Stanley", "scgp_registry"),
+    ]
+    for label, msg, expected in scgp_cases:
+        tool_name, tool_args = route(msg, llm_fn=llm_classify)
+        ok = tool_name == expected
+        test(f"{label} SCGP: {expected}", ok, f"got={tool_name}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

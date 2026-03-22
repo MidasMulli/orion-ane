@@ -34,7 +34,7 @@ def build_messages(history, user_msg, tool_name=None, tool_args=None, tool_resul
         # Qwen template requires system messages at the beginning only
         messages.append({
             "role": "assistant",
-            "content": f"[I called {tool_name} and got:]\n{str(tool_result)[:2000]}"
+            "content": f"[I called {tool_name} and got:]\n{str(tool_result)[:4000]}"
         })
         messages.append({
             "role": "user",
