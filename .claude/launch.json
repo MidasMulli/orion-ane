@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "memory-dashboard",
+      "runtimeExecutable": "/Users/midas/.mlx-env/bin/python3",
+      "runtimeArgs": ["/Users/midas/Desktop/cowork/orion-ane/memory/dashboard.py"],
+      "port": 8421
+    }
+  ]
+}

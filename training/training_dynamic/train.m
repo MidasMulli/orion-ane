@@ -190,6 +190,10 @@ int main(int argc, char *argv[]) {
 
         bool do_resume = false, from_scratch = false;
         const char *data_path = DEFAULT_DATA_PATH;
+        const char *distill_path = NULL;
+        float distill_temperature = 2.0f;
+        float distill_alpha = 0.5f;  // α*CE + (1-α)*KL
+        bool token32 = false;  // uint32 token data (for Qwen3 vocab > 65535)
         for (int i=1; i<argc; i++) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
             else if (strcmp(argv[i], "--scratch") == 0) from_scratch = true;
@@ -199,6 +203,11 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--warmup") == 0 && i+1<argc) warmup_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--clip") == 0 && i+1<argc) grad_clip = atof(argv[++i]);
             else if (strcmp(argv[i], "--data") == 0 && i+1<argc) data_path = argv[++i];
+            else if (strcmp(argv[i], "--distill") == 0 && i+1<argc) distill_path = argv[++i];
+            else if (strcmp(argv[i], "--temperature") == 0 && i+1<argc) distill_temperature = atof(argv[++i]);
+            else if (strcmp(argv[i], "--alpha") == 0 && i+1<argc) distill_alpha = atof(argv[++i]);
+            else if (strcmp(argv[i], "--token32") == 0) token32 = true;
+            else if (strcmp(argv[i], "--loss_scale") == 0 && i+1<argc) loss_scale = atof(argv[++i]);
         }
         float lr = max_lr;
 
@@ -219,12 +228,15 @@ int main(int argc, char *argv[]) {
         double cum_train=0, cum_wall=0; int cum_steps=0;
         float resume_loss = 0;
         bool resuming = false;
+        int cli_steps = total_steps;  // Remember CLI --steps value
         if (do_resume) {
             resuming = load_checkpoint(CKPT_PATH, &start_step, &total_steps, &lr, &resume_loss,
                 &cum_train, &cum_wall, &cum_steps, &adam_t,
                 lw, la, rms_final, &arms_final, embed, &aembed);
             if (resuming) printf("[RESUMED step %d, loss=%.4f]\n", start_step, resume_loss);
         }
+        // CLI --steps always takes precedence over checkpoint value
+        if (cli_steps != 10000) total_steps = cli_steps;  // 10000 = default
         if (!resuming) {
             printf("=== ANE Dynamic Training: %s (%d layers, GQA %d/%d heads) ===\n",
                    MODEL_NAME, NLAYERS, HEADS, KV_HEADS);
@@ -234,7 +246,7 @@ int main(int argc, char *argv[]) {
             double embed_m = (double)VOCAB*DIM / 1e6;
             printf("Params: %.1fM (transformer %.1fM + embed %.1fM)\n", xformer_m+embed_m, xformer_m, embed_m);
             printf("Kernels: 10 compiled (sdpaFwd+woFwd, ffnFused, ffnBwdW2t+W13t, wotBwd, sdpaBwd1+2, qBwd+kvBwd)\n");
-            printf("Accum %d steps, LR=%g\n", accum_steps, max_lr);
+            printf("Accum %d steps, LR=%g, loss_scale=%.1f, grad_clip=%.1f\n", accum_steps, max_lr, loss_scale, grad_clip);
             double fwd_flops = 2.0*NLAYERS*((double)WQ_SZ + WK_SZ + WV_SZ + WO_SZ + W1_SZ + W2_SZ + W3_SZ) * SEQ;
             double total_flops = 3.0 * fwd_flops;
             printf("FLOPs/step: fwd=%.1fM total=%.1fM\n", fwd_flops/1e6, total_flops/1e6);
@@ -291,19 +303,67 @@ int main(int argc, char *argv[]) {
         if (data_fd < 0) { printf("Cannot open %s\n", data_path); return 1; }
         struct stat st; fstat(data_fd, &st);
         size_t data_len = st.st_size;
-        uint16_t *token_data = (uint16_t*)mmap(NULL, data_len, PROT_READ, MAP_PRIVATE, data_fd, 0);
-        if (token_data == MAP_FAILED) { printf("mmap failed\n"); return 1; }
-        size_t n_tokens = data_len / 2;
-        printf("Token data: %zu tokens (%.1f MB)\n", n_tokens, data_len/1e6);
+        void *token_data_raw = mmap(NULL, data_len, PROT_READ, MAP_PRIVATE, data_fd, 0);
+        if (token_data_raw == MAP_FAILED) { printf("mmap failed\n"); return 1; }
+
+        // Support both uint16 and uint32 token data
+        uint16_t *token_data_u16 = token32 ? NULL : (uint16_t*)token_data_raw;
+        uint32_t *token_data_u32 = token32 ? (uint32_t*)token_data_raw : NULL;
+        size_t n_tokens = data_len / (token32 ? 4 : 2);
+        printf("Token data: %zu tokens (%.1f MB, %s)\n", n_tokens, data_len/1e6, token32 ? "uint32" : "uint16");
 
         // Vocab compaction
-        VocabMap vm = vocab_map_build(token_data, n_tokens, VOCAB);
+        VocabMap vm;
+        if (token32) {
+            vm = vocab_map_build_u32(token_data_u32, n_tokens, VOCAB);
+        } else {
+            vm = vocab_map_build(token_data_u16, n_tokens, VOCAB);
+        }
         int CV = vm.compact_vocab;
         printf("Vocab compaction: %d → %d active tokens (%.1fx reduction)\n", VOCAB, CV, (float)VOCAB/CV);
 
         float *cembed = vocab_compact_embed(embed, &vm, DIM);
         float *gcembed = (float*)calloc((size_t)CV*DIM, 4);
         AdamState acembed = adam_alloc((size_t)CV*DIM);
+
+        // ===== Load teacher data for distillation =====
+        int distill_top_k = 0;
+        int distill_n_seq = 0;
+        int *teacher_top_ids = NULL;      // [n_seq * SEQ * top_k] int32
+        float *teacher_top_logits = NULL; // [n_seq * SEQ * top_k] float32
+        if (distill_path) {
+            FILE *tf = fopen(distill_path, "rb");
+            if (!tf) { printf("Cannot open distill file: %s\n", distill_path); return 1; }
+            uint32_t hdr[6];
+            fread(hdr, 4, 6, tf);
+            if (hdr[0] != 0x544C4F47) { printf("Bad teacher file magic\n"); return 1; }
+            distill_top_k = hdr[2];
+            int file_seq = hdr[3];
+            distill_n_seq = hdr[4];
+            int file_vocab = hdr[5];
+            printf("Distillation mode: %d sequences, top_k=%d, seq=%d, vocab=%d\n",
+                   distill_n_seq, distill_top_k, file_seq, file_vocab);
+            if (file_seq != SEQ) {
+                printf("  ERROR: Teacher seq_len %d != model SEQ %d\n", file_seq, SEQ);
+                return 1;
+            }
+            size_t per_pos = distill_top_k * sizeof(int) + distill_top_k * sizeof(float);
+            size_t total_data = (size_t)distill_n_seq * SEQ * per_pos;
+            teacher_top_ids = (int*)malloc((size_t)distill_n_seq * SEQ * distill_top_k * sizeof(int));
+            teacher_top_logits = (float*)malloc((size_t)distill_n_seq * SEQ * distill_top_k * sizeof(float));
+            for (int s = 0; s < distill_n_seq; s++) {
+                for (int t = 0; t < SEQ; t++) {
+                    size_t offset = ((size_t)s * SEQ + t) * distill_top_k;
+                    fread(teacher_top_ids + offset, sizeof(int), distill_top_k, tf);
+                    fread(teacher_top_logits + offset, sizeof(float), distill_top_k, tf);
+                }
+            }
+            fclose(tf);
+            printf("  Loaded teacher data (%.1f MB), temperature=%.1f, alpha=%.2f\n",
+                   total_data / 1e6, distill_temperature, distill_alpha);
+            printf("  Loss = %.2f * CE(hard) + %.2f * KL(soft, T=%.1f)\n",
+                   distill_alpha, 1.0f - distill_alpha, distill_temperature);
+        }
 
         // ===== Compile all kernels ONCE =====
         printf("Compiling 10 dynamic kernels (one-time)...\n");
@@ -394,15 +454,33 @@ int main(int argc, char *argv[]) {
             uint64_t t0, t1, t_step = mach_absolute_time();
 
             // Sample data
-            size_t max_pos = n_tokens - SEQ - 1;
-            size_t pos = (size_t)(drand48() * max_pos);
-            uint16_t *input_tokens = token_data + pos;
-            uint16_t *target_tokens_raw = token_data + pos + 1;
+            int distill_seq_idx = -1;  // which teacher sequence we're using
+            size_t pos;
+            if (distill_path && distill_n_seq > 0) {
+                // In distill mode, sample from pre-generated teacher sequences
+                distill_seq_idx = (int)(drand48() * distill_n_seq);
+                pos = (size_t)distill_seq_idx * SEQ;  // teacher sequences are non-overlapping, stride=SEQ
+            } else {
+                size_t max_pos = n_tokens - SEQ - 1;
+                pos = (size_t)(drand48() * max_pos);
+            }
 
             uint16_t ctargets[SEQ];
-            for (int t = 0; t < SEQ; t++) ctargets[t] = (uint16_t)vm.full_to_compact[target_tokens_raw[t]];
-
-            embed_lookup(x_cur, embed, input_tokens, DIM, SEQ);
+            uint16_t input_tokens_u16_buf[SEQ];   // for embed_backward
+            uint32_t input_tokens_u32_buf[SEQ];
+            if (token32) {
+                uint32_t *input_tokens = token_data_u32 + pos;
+                uint32_t *target_tokens_raw = token_data_u32 + pos + 1;
+                for (int t = 0; t < SEQ; t++) ctargets[t] = (uint16_t)vm.full_to_compact[target_tokens_raw[t]];
+                memcpy(input_tokens_u32_buf, input_tokens, SEQ * sizeof(uint32_t));
+                embed_lookup_u32(x_cur, embed, input_tokens, DIM, SEQ);
+            } else {
+                uint16_t *input_tokens = token_data_u16 + pos;
+                uint16_t *target_tokens_raw = token_data_u16 + pos + 1;
+                for (int t = 0; t < SEQ; t++) ctargets[t] = (uint16_t)vm.full_to_compact[target_tokens_raw[t]];
+                memcpy(input_tokens_u16_buf, input_tokens, SEQ * sizeof(uint16_t));
+                embed_lookup(x_cur, embed, input_tokens, DIM, SEQ);
+            }
 
             double t_rms=0, t_ane_fwd=0, t_io_fwd=0, t_cblas_wait=0;
             double t_ane_bwd=0, t_io_bwd=0, t_silu=0, t_rms_bwd=0, t_cls=0, t_dw_copy=0;
@@ -480,6 +558,13 @@ int main(int argc, char *argv[]) {
                 cvt_f16_f32(ac->silu_out,ffn_out + off, HIDDEN*SEQ);
                 IOSurfaceUnlock(dk.ffnFused->ioOut, kIOSurfaceLockReadOnly, NULL);
                 t_io_fwd += tb_ms(mach_absolute_time() - t0);
+
+                // Clamp residual stream to prevent unbounded growth through layers.
+                // Pretrained model produces x in [-900, 800] at init; allow 4x growth.
+                {
+                    float act_hi = 4000.0f, act_lo = -4000.0f;
+                    vDSP_vclip(x_cur, 1, &act_lo, &act_hi, x_cur, 1, (vDSP_Length)(SEQ*DIM));
+                }
             }
 
             // Final RMSNorm + classifier + loss (CPU)
@@ -489,12 +574,65 @@ int main(int argc, char *argv[]) {
             t0 = mach_absolute_time();
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                         CV, SEQ, DIM, 1.0f, cembed, DIM, x_final, SEQ, 0.0f, logits, SEQ);
-            float loss = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+            float loss;
+            if (distill_path && distill_seq_idx >= 0) {
+                // Combined loss: α*CE(hard) + (1-α)*KL(soft)
+                float ce_loss = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+                // Compute KL gradient into separate buffer
+                float *kl_dlogits = (float*)calloc(SEQ * CV, 4);
+                size_t teacher_offset = (size_t)distill_seq_idx * SEQ * distill_top_k;
+                float kl_loss = kl_divergence_loss(kl_dlogits, logits,
+                    teacher_top_ids + teacher_offset,
+                    teacher_top_logits + teacher_offset,
+                    vm.full_to_compact, distill_top_k,
+                    CV, SEQ, distill_temperature);
+                // Combine: dlogits = α*CE_grad + (1-α)*KL_grad
+                float alpha = distill_alpha;
+                float one_minus_alpha = 1.0f - alpha;
+                vDSP_vsmul(dlogits, 1, &alpha, dlogits, 1, (vDSP_Length)(SEQ*CV));
+                vDSP_vsma(kl_dlogits, 1, &one_minus_alpha, dlogits, 1, dlogits, 1, (vDSP_Length)(SEQ*CV));
+                free(kl_dlogits);
+                loss = alpha * ce_loss + one_minus_alpha * kl_loss;
+                if (step % 10 == 0) {
+                    printf("  [distill] CE=%.4f KL=%.4f combined=%.4f (seq=%d)\n",
+                           ce_loss, kl_loss, loss, distill_seq_idx);
+                }
+            } else {
+                loss = cross_entropy_loss(dlogits, logits, ctargets, CV, SEQ);
+            }
             t_cls += tb_ms(mach_absolute_time() - t0);
             last_loss = loss;
 
+            // Forward pass health check: skip backward if activations are invalid
+            {
+                float xmx;
+                vDSP_maxmgv(x_cur, 1, &xmx, (vDSP_Length)(SEQ*DIM));
+                if (isnan(xmx) || xmx > 60000.0f || isnan(loss)) {
+                    if (step % 10 == 0) printf("    SKIP bwd: x_max=%.0f loss=%.4f\n", xmx, loss);
+                    continue;  // skip backward+accumulation for this step
+                }
+            }
+
             // ===== BACKWARD =====
             vDSP_vsmul(dlogits, 1, &loss_scale, dlogits, 1, (vDSP_Length)(SEQ*CV));
+
+            // Clamp dlogits to prevent fp16 overflow in ANE backward kernels.
+            // fp16 max ≈ 65504; with pretrained weights amplifying through the chain,
+            // we need headroom. Clamp to ±loss_scale keeps scaled gradients in safe range.
+            {
+                float clamp_hi = loss_scale, clamp_lo = -loss_scale;
+                unsigned long n_clamped = 0;
+                vDSP_vclip(dlogits, 1, &clamp_lo, &clamp_hi, dlogits, 1, (vDSP_Length)(SEQ*CV));
+                if (step % 10 == 0) {
+                    for (int j=0; j<SEQ*CV; j++) {
+                        if (dlogits[j] == clamp_hi || dlogits[j] == clamp_lo) n_clamped++;
+                    }
+                    float dmax, dmin;
+                    vDSP_maxv(dlogits, 1, &dmax, (vDSP_Length)(SEQ*CV));
+                    vDSP_minv(dlogits, 1, &dmin, (vDSP_Length)(SEQ*CV));
+                    printf("    dlogits[%.2f,%.2f] clamped=%lu/%d\n", dmin, dmax, n_clamped, SEQ*CV);
+                }
+            }
 
             // Classifier backward
             t0 = mach_absolute_time();
@@ -519,6 +657,15 @@ int main(int argc, char *argv[]) {
                 LayerActs *ac = &acts[L];
                 LayerGrads *gr = &grads[L];
 
+                // Clamp dy to prevent gradient explosion through layer chain.
+                // With pretrained weights, gradients amplify at each layer's matmul.
+                // fp16 ANE kernels overflow if intermediate values > 65504.
+                // Clamp to ±256 gives ~256x headroom for within-kernel amplification.
+                {
+                    float dy_max = 256.0f, dy_min = -256.0f;
+                    vDSP_vclip(dy, 1, &dy_min, &dy_max, dy, 1, (vDSP_Length)(SEQ*DIM));
+                }
+
                 // dffn = alpha * dy
                 vDSP_vsmul(dy, 1, &res_alpha, dffn, 1, (vDSP_Length)(SEQ*DIM));
 
@@ -531,6 +678,7 @@ int main(int argc, char *argv[]) {
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
                 t0 = mach_absolute_time();
                 io_read_dyn(dk.ffnBwdW2t->ioOut, dsilu, HIDDEN, SEQ);
+                sanitize_f32(dsilu, HIDDEN*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // SiLU derivative (vectorized)
@@ -554,6 +702,13 @@ int main(int argc, char *argv[]) {
                 }
                 t_silu += tb_ms(mach_absolute_time() - t0);
 
+                // Clamp dh1/dh3 — products of dsilu*h3, dsilu*h1*deriv can overflow
+                {
+                    float gh = 65504.0f, gl = -65504.0f;
+                    vDSP_vclip(dh1, 1, &gl, &gh, dh1, 1, (vDSP_Length)(HIDDEN*SEQ));
+                    vDSP_vclip(dh3, 1, &gl, &gh, dh3, 1, (vDSP_Length)(HIDDEN*SEQ));
+                }
+
                 // dh1@W1^T + dh3@W3^T → dx_ffn (ANE)
                 t0 = mach_absolute_time();
                 write_ffn_bwd_w13t_acts(pls[L].ffnBwdW13t_in, dh1, dh3);
@@ -563,6 +718,7 @@ int main(int argc, char *argv[]) {
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
                 t0 = mach_absolute_time();
                 io_read_dyn(dk.ffnBwdW13t->ioOut, dx_ffn, DIM, SEQ);
+                sanitize_f32(dx_ffn, DIM*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // dW FFN async
@@ -601,6 +757,7 @@ int main(int argc, char *argv[]) {
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
                 t0 = mach_absolute_time();
                 io_read_dyn(dk.wotBwd->ioOut, da_buf, Q_DIM, SEQ);
+                sanitize_f32(da_buf, Q_DIM*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // dWo async: gr->Wo[DIM,Q_DIM] += dx2_scaled[DIM,SEQ] @ attn_out^T[SEQ,Q_DIM]
@@ -647,6 +804,9 @@ int main(int argc, char *argv[]) {
                 io_read_fp16(dk.sdpaBwd2->ioOut, dq_full, 0,     Q_DIM, SEQ);  // dQ at full HEADS
                 io_read_fp16(dk.sdpaBwd2->ioOut, dk_full, Q_DIM, Q_DIM, SEQ);  // dK at full HEADS
                 io_read_fp16(dk.sdpaBwd1->ioOut, dv_full, 0,     Q_DIM, SEQ);  // dV at full HEADS
+                sanitize_f32(dq_full, Q_DIM*SEQ);
+                sanitize_f32(dk_full, Q_DIM*SEQ);
+                sanitize_f32(dv_full, Q_DIM*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // GQA: reduce dK, dV from Q_DIM (HEADS) → KV_DIM (KV_HEADS)
@@ -696,6 +856,7 @@ int main(int argc, char *argv[]) {
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
                 t0 = mach_absolute_time();
                 io_read_dyn(dk.qBwd->ioOut, dx_attn, DIM, SEQ);
+                sanitize_f32(dx_attn, DIM*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // KV backward (ANE): dk[KV_DIM]@Wk + dv[KV_DIM]@Wv → dx_kv[DIM]
@@ -708,6 +869,7 @@ int main(int argc, char *argv[]) {
                 t_ane_bwd += tb_ms(mach_absolute_time() - t0);
                 t0 = mach_absolute_time();
                 io_read_dyn(dk.kvBwd->ioOut, dx_kv, DIM, SEQ);
+                sanitize_f32(dx_kv, DIM*SEQ);
                 t_io_bwd += tb_ms(mach_absolute_time() - t0);
 
                 // dx_attn = dx_q + dx_kv
@@ -725,7 +887,10 @@ int main(int argc, char *argv[]) {
 
             // Embedding backward
             dispatch_group_wait(dw_grp, DISPATCH_TIME_FOREVER);
-            embed_backward(gembed, dy, input_tokens, DIM, SEQ);
+            if (token32)
+                embed_backward_u32(gembed, dy, input_tokens_u32_buf, DIM, SEQ);
+            else
+                embed_backward(gembed, dy, input_tokens_u16_buf, DIM, SEQ);
 
             double step_ms = tb_ms(mach_absolute_time() - t_step);
             total_train_ms += step_ms;
@@ -750,9 +915,14 @@ int main(int argc, char *argv[]) {
                 float gsc = 1.0f / (accum_steps * loss_scale);
                 adam_t++;
 
-                // Scale gradients
+                // Sanitize + scale gradients (replace inf/nan from fp16 overflow)
                 for (int L=0; L<NLAYERS; L++) {
                     LayerGrads *g = &grads[L];
+                    sanitize_f32(g->Wq, WQ_SZ); sanitize_f32(g->Wk, WK_SZ);
+                    sanitize_f32(g->Wv, WV_SZ); sanitize_f32(g->Wo, WO_SZ);
+                    sanitize_f32(g->W1, W1_SZ); sanitize_f32(g->W2, W2_SZ);
+                    sanitize_f32(g->W3, W3_SZ);
+                    sanitize_f32(g->rms_att, DIM); sanitize_f32(g->rms_ffn, DIM);
                     for(size_t i=0;i<WQ_SZ;i++) g->Wq[i]*=gsc;
                     for(size_t i=0;i<WK_SZ;i++) g->Wk[i]*=gsc;
                     for(size_t i=0;i<WV_SZ;i++) g->Wv[i]*=gsc;
@@ -762,8 +932,10 @@ int main(int argc, char *argv[]) {
                     for(size_t i=0;i<W3_SZ;i++) g->W3[i]*=gsc;
                     for(int i=0;i<DIM;i++){g->rms_att[i]*=gsc; g->rms_ffn[i]*=gsc;}
                 }
+                sanitize_f32(grms_final, DIM);
                 for(int i=0;i<DIM;i++) grms_final[i]*=gsc;
                 vocab_scatter_grads(gembed, gcembed, &vm, DIM);
+                sanitize_f32(gembed, VOCAB*DIM);
                 for(size_t i=0;i<(size_t)VOCAB*DIM;i++) gembed[i]*=gsc;
 
                 // Global gradient norm
@@ -803,6 +975,24 @@ int main(int argc, char *argv[]) {
                     }
                     printf("  grad_norm=%.4f  attn=%.4f ffn=%.4f embed=%.4f\n",
                            grad_norm, sqrtf(attn_sq), sqrtf(ffn_sq), sqrtf(embed_sq));
+                    fflush(stdout);  // Force flush for piped output (tee, bridges)
+                }
+
+                // NaN detection: skip step if gradients are invalid
+                if (isnan(grad_norm) || isinf(grad_norm)) {
+                    printf("  WARNING: NaN/Inf grad_norm at step %d, skipping update\n", step);
+                    // Zero all gradients to prevent corrupting weights
+                    for (int L=0; L<NLAYERS; L++) {
+                        LayerGrads *g = &grads[L];
+                        memset(g->Wq, 0, WQ_SZ*4); memset(g->Wk, 0, WK_SZ*4);
+                        memset(g->Wv, 0, WV_SZ*4); memset(g->Wo, 0, WO_SZ*4);
+                        memset(g->W1, 0, W1_SZ*4); memset(g->W2, 0, W2_SZ*4);
+                        memset(g->W3, 0, W3_SZ*4);
+                        memset(g->rms_att, 0, DIM*4); memset(g->rms_ffn, 0, DIM*4);
+                    }
+                    memset(grms_final, 0, DIM*4);
+                    memset(gembed, 0, VOCAB*DIM*4);
+                    grad_norm = 0;
                 }
 
                 // Gradient clipping
@@ -911,7 +1101,7 @@ int main(int argc, char *argv[]) {
         free(da_buf); free(k_tiled); free(v_tiled);
         free(dq_full); free(dk_full); free(dv_full);
         free(dq); free(dk_buf); free(dv);
-        munmap(token_data, data_len); close(data_fd);
+        munmap(token_data_raw, data_len); close(data_fd);
     }
     return 0;
 }

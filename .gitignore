@@ -1,0 +1,35 @@
+# Model weights (too large for git)
+*.npz
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+
+# Compiled CoreML models
+*.mlmodelc/
+*.mlpackage/
+
+# Compiled binaries
+*.o
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+.eggs/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Environments
+.venv/
+env/
+
+# Package symlink (phantom_memory -> memory)
+phantom_memory
+
+# ChromaDB data
+chromadb*/
+memory_store/

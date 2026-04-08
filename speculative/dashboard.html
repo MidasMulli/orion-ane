@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Speculative Decoding — ANE + GPU</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; color: #e0e0e0; font-family: 'JetBrains Mono', 'SF Mono', monospace; }
+
+.header {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border-bottom: 1px solid #00ff9944;
+    padding: 20px 30px;
+    display: flex; justify-content: space-between; align-items: center;
+}
+.header h1 { font-size: 18px; color: #00ff99; letter-spacing: 2px; }
+.header .subtitle { color: #666; font-size: 12px; margin-top: 4px; }
+.status-badge {
+    padding: 4px 12px; border-radius: 12px; font-size: 11px;
+    background: #1a1a2e; border: 1px solid #333;
+}
+.status-badge.ready { border-color: #00ff99; color: #00ff99; }
+.status-badge.init { border-color: #ffaa00; color: #ffaa00; animation: pulse 1s infinite; }
+
+.container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+
+.panel {
+    background: #0d1117; border: 1px solid #1a1a2e; border-radius: 8px;
+    padding: 16px; position: relative; overflow: hidden;
+}
+.panel::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+}
+.panel.ane::before { background: linear-gradient(90deg, #ff6b00, #ff9500); }
+.panel.gpu::before { background: linear-gradient(90deg, #00aaff, #0066ff); }
+.panel.flow::before { background: linear-gradient(90deg, #00ff99, #00cc77); }
+.panel.results::before { background: linear-gradient(90deg, #cc44ff, #9933cc); }
+.panel.accept::before { background: linear-gradient(90deg, #00ff99, #ffaa00); }
+
+.panel h2 { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+.panel h2 .icon { margin-right: 6px; }
+
+.full-width { grid-column: 1 / -1; }
+
+/* Big metrics row */
+.big-metrics {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.big-metric {
+    background: #111; border-radius: 8px; padding: 16px; text-align: center;
+    border: 1px solid #1a1a2e;
+}
+.big-metric .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+.big-metric .value { font-size: 28px; font-weight: bold; margin-top: 6px; }
+.big-metric .unit { font-size: 12px; color: #666; }
+.big-metric.accent-green .value { color: #00ff99; }
+.big-metric.accent-orange .value { color: #ff9500; }
+.big-metric.accent-blue .value { color: #00aaff; }
+.big-metric.accent-purple .value { color: #cc44ff; }
+
+/* Token comparison strip */
+.token-strip {
+    display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 0;
+}
+.token-chip {
+    padding: 4px 8px; border-radius: 4px; font-size: 11px;
+    display: inline-flex; align-items: center; gap: 4px;
+}
+.token-chip.accepted { background: #0a2a0a; border: 1px solid #00ff99; color: #00ff99; }
+.token-chip.rejected { background: #2a0a0a; border: 1px solid #ff4444; color: #ff4444; }
+.token-chip .correction { color: #ffaa00; font-size: 10px; }
+
+/* Round cards */
+.round-card {
+    background: #111; border-radius: 6px; padding: 12px; margin-bottom: 8px;
+    border-left: 3px solid #333;
+}
+.round-card.good { border-left-color: #00ff99; }
+.round-card.partial { border-left-color: #ffaa00; }
+.round-card.miss { border-left-color: #ff4444; }
+.round-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; font-size: 12px;
+}
+.round-header .label { color: #888; }
+.round-header .rate { font-weight: bold; }
+.round-header .rate.high { color: #00ff99; }
+.round-header .rate.mid { color: #ffaa00; }
+.round-header .rate.low { color: #ff4444; }
+
+/* Metrics grid */
+.metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.metric {
+    background: #111; border-radius: 6px; padding: 12px;
+    border-left: 3px solid #333;
+}
+.metric.ane { border-left-color: #ff6b00; }
+.metric.gpu { border-left-color: #0066ff; }
+.metric.good { border-left-color: #00ff99; }
+.metric .label { font-size: 10px; color: #666; text-transform: uppercase; }
+.metric .value { font-size: 22px; font-weight: bold; margin-top: 4px; }
+.metric .unit { font-size: 11px; color: #666; margin-left: 4px; }
+
+/* Input */
+.input-area { display: flex; gap: 8px; margin-bottom: 12px; }
+.input-area input {
+    flex: 1; background: #111; border: 1px solid #333; border-radius: 6px;
+    padding: 10px 14px; color: #e0e0e0; font-family: inherit; font-size: 13px;
+}
+.input-area input:focus { outline: none; border-color: #00ff99; }
+.btn {
+    padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: bold;
+    transition: all 0.2s;
+}
+.btn-primary { background: #00ff99; color: #000; }
+.btn-primary:hover { background: #00cc77; }
+.btn-primary:disabled { background: #333; color: #666; cursor: not-allowed; }
+.btn-init { background: #ff6b00; color: #fff; }
+.btn-init:hover { background: #cc5500; }
+
+/* Presets */
+.presets { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.preset {
+    padding: 4px 10px; background: #1a1a2e; border: 1px solid #333;
+    border-radius: 4px; font-size: 11px; cursor: pointer; color: #aaa;
+}
+.preset:hover { border-color: #00ff99; color: #00ff99; }
+
+/* Log */
+.log {
+    background: #050508; border: 1px solid #1a1a2e; border-radius: 6px;
+    padding: 12px; max-height: 250px; overflow-y: auto; font-size: 11px;
+    line-height: 1.6;
+}
+.log-entry { padding: 2px 0; border-bottom: 1px solid #0a0a0f; }
+.log-entry .time { color: #444; margin-right: 8px; }
+.log-entry.ane { color: #ff9500; }
+.log-entry.gpu { color: #00aaff; }
+.log-entry.success { color: #00ff99; }
+.log-entry.error { color: #ff4444; }
+
+/* Response */
+.response-card {
+    background: #111; border-radius: 6px; padding: 14px; margin-top: 12px;
+    border-left: 3px solid #00ff99;
+}
+.response-card .prompt-text { color: #888; font-size: 12px; margin-bottom: 8px; }
+.response-card .response-text { color: #e0e0e0; font-size: 13px; line-height: 1.5; }
+
+/* Pipeline bar */
+.pipeline-bar {
+    display: flex; height: 24px; border-radius: 4px; overflow: hidden;
+    margin: 8px 0; background: #1a1a2e;
+}
+.pipeline-bar .seg {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: bold; transition: width 0.5s;
+}
+.pipeline-bar .seg.ane { background: #ff6b0066; color: #ff9500; }
+.pipeline-bar .seg.gpu { background: #0066ff66; color: #00aaff; }
+
+/* Phase indicator */
+.phase-row {
+    display: flex; gap: 12px; justify-content: center; padding: 12px 0;
+}
+.phase-badge {
+    padding: 6px 16px; border-radius: 16px; font-size: 11px;
+    background: #1a1a2e; border: 1px solid #333; color: #666;
+    transition: all 0.3s;
+}
+.phase-badge.active { animation: pulse 1s infinite; }
+.phase-badge.ane.active { border-color: #ff6b00; color: #ff9500; background: #1a0d00; }
+.phase-badge.gpu.active { border-color: #0066ff; color: #00aaff; background: #001a33; }
+.phase-badge.done { border-color: #00ff99; color: #00ff99; }
+
+/* Acceptance bar */
+.accept-bar {
+    height: 20px; border-radius: 10px; background: #1a1a2e;
+    overflow: hidden; position: relative; margin-top: 8px;
+}
+.accept-fill {
+    height: 100%; border-radius: 10px;
+    background: linear-gradient(90deg, #00ff99, #00cc77);
+    transition: width 0.5s;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: bold; color: #000;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>⚡ SPECULATIVE DECODING</h1>
+        <div class="subtitle">Qwen3-0.6B on Neural Engine (draft) → Qwen3.5-9B on GPU (verify) — Apple M5</div>
+    </div>
+    <div>
+        <span class="status-badge" id="statusBadge">NOT INITIALIZED</span>
+    </div>
+</div>
+
+<div class="container">
+    <!-- Big Metrics -->
+    <div class="panel flow full-width">
+        <h2><span class="icon">◆</span> Speculative Decode Pipeline</h2>
+        <div class="phase-row">
+            <div class="phase-badge ane" id="phaseANE">⚡ ANE Draft</div>
+            <div class="phase-badge gpu" id="phaseGPU">🔷 GPU Verify</div>
+            <div class="phase-badge" id="phaseResult">✓ Accept/Reject</div>
+        </div>
+        <div class="big-metrics">
+            <div class="big-metric accent-green">
+                <div class="label">Acceptance Rate</div>
+                <div class="value" id="acceptRate">—<span class="unit">%</span></div>
+            </div>
+            <div class="big-metric accent-orange">
+                <div class="label">ANE Draft</div>
+                <div class="value" id="aneSpeed">—<span class="unit">tok/s</span></div>
+            </div>
+            <div class="big-metric accent-blue">
+                <div class="label">GPU Verify</div>
+                <div class="value" id="gpuSpeed">—<span class="unit">tok/s</span></div>
+            </div>
+            <div class="big-metric accent-purple">
+                <div class="label">Rounds</div>
+                <div class="value" id="roundCount">—</div>
+            </div>
+        </div>
+        <div class="accept-bar" style="margin-top:12px">
+            <div class="accept-fill" id="acceptFill" style="width:0%"></div>
+        </div>
+    </div>
+
+    <!-- Token Comparison -->
+    <div class="panel accept full-width">
+        <h2><span class="icon">◈</span> Token-Level Acceptance</h2>
+        <div id="tokenArea">
+            <div style="color:#444; font-style:italic;">Run a query to see token-by-token draft vs verify comparison...</div>
+        </div>
+    </div>
+
+    <!-- Input Panel -->
+    <div class="panel full-width" style="border-top: 2px solid #00ff99;">
+        <h2><span class="icon">▶</span> Query</h2>
+        <div style="margin-bottom: 8px;">
+            <button class="btn btn-init" id="initBtn" onclick="initSystem()">⚡ Initialize ANE + GPU (loads Qwen3-0.6B)</button>
+        </div>
+        <div class="input-area">
+            <input type="text" id="promptInput"
+                   placeholder="Enter a prompt..."
+                   value="Paris is the capital of France. Berlin is the capital of"
+                   onkeydown="if(event.key==='Enter')generate()">
+            <button class="btn btn-primary" id="genBtn" onclick="generate()" disabled>Generate</button>
+        </div>
+        <div class="presets">
+            <div class="preset" onclick="setPrompt('Paris is the capital of France. Berlin is the capital of')">Geography</div>
+            <div class="preset" onclick="setPrompt('The largest planet in our solar system is')">Science</div>
+            <div class="preset" onclick="setPrompt('In machine learning, a neural network consists of')">ML</div>
+            <div class="preset" onclick="setPrompt('The first president of the United States was')">History</div>
+            <div class="preset" onclick="setPrompt('Water boils at a temperature of')">Physics</div>
+            <div class="preset" onclick="setPrompt('The programming language Python was created by')">Tech</div>
+        </div>
+    </div>
+
+    <!-- ANE Panel -->
+    <div class="panel ane">
+        <h2><span class="icon">⚡</span> Neural Engine — Draft Model</h2>
+        <div class="metrics-grid">
+            <div class="metric ane">
+                <div class="label">Model</div>
+                <div class="value" style="font-size:13px">Qwen3-0.6B</div>
+            </div>
+            <div class="metric ane">
+                <div class="label">ANE Kernels</div>
+                <div class="value" id="aneKernels" style="font-size:16px">215</div>
+            </div>
+            <div class="metric ane">
+                <div class="label">Draft Time</div>
+                <div class="value" id="aneDraftTime">—<span class="unit">ms</span></div>
+            </div>
+            <div class="metric ane">
+                <div class="label">Draft Tokens</div>
+                <div class="value" id="aneDraftTokens">—</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- GPU Panel -->
+    <div class="panel gpu">
+        <h2><span class="icon">🔷</span> GPU — Verifier Model</h2>
+        <div class="metrics-grid">
+            <div class="metric gpu">
+                <div class="label">Model</div>
+                <div class="value" style="font-size:13px">Qwen3.5 9B</div>
+            </div>
+            <div class="metric gpu">
+                <div class="label">Accepted</div>
+                <div class="value" id="gpuAccepted" style="color:#00ff99">—</div>
+            </div>
+            <div class="metric gpu">
+                <div class="label">Verify Time</div>
+                <div class="value" id="gpuVerifyTime">—<span class="unit">ms</span></div>
+            </div>
+            <div class="metric gpu">
+                <div class="label">Rejected</div>
+                <div class="value" id="gpuRejected" style="color:#ff4444">—</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Response -->
+    <div class="panel results">
+        <h2><span class="icon">◈</span> Response</h2>
+        <div id="responseArea">
+            <div style="color: #444; font-style: italic;">Initialize and submit a query to see results...</div>
+        </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="panel">
+        <h2><span class="icon">◉</span> Activity Log</h2>
+        <div class="log" id="activityLog">
+            <div class="log-entry"><span class="time">--:--:--</span> System ready. Click Initialize to load Qwen3-0.6B onto ANE.</div>
+        </div>
+    </div>
+</div>
+
+<script>
+let ws = null;
+let initialized = false;
+
+function connectWS() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onmessage = (e) => handleWSMessage(JSON.parse(e.data));
+    ws.onclose = () => setTimeout(connectWS, 2000);
+}
+
+function handleWSMessage(msg) {
+    switch (msg.type) {
+        case 'status':
+            addLog(msg.msg, 'success');
+            break;
+        case 'error':
+            addLog('ERROR: ' + msg.msg, 'error');
+            break;
+        case 'generation_start':
+            document.getElementById('tokenArea').innerHTML = '';
+            break;
+        case 'phase':
+            setPhase(msg.phase, msg.round || 0);
+            addLog(msg.msg, msg.phase === 'draft' ? 'ane' : 'gpu');
+            break;
+        case 'draft_complete':
+            document.getElementById('aneSpeed').innerHTML =
+                msg.tok_per_sec + '<span class="unit">tok/s</span>';
+            document.getElementById('aneDraftTime').innerHTML =
+                msg.time_ms + '<span class="unit">ms</span>';
+            document.getElementById('aneDraftTokens').textContent =
+                msg.tokens ? msg.tokens.length : '—';
+            addLog(`R${msg.round} ANE: drafted "${msg.text}" (${msg.time_ms}ms)`, 'ane');
+            break;
+        case 'verify_complete':
+            showRoundTokens(msg);
+            document.getElementById('gpuVerifyTime').innerHTML =
+                msg.time_ms + '<span class="unit">ms</span>';
+            document.getElementById('gpuAccepted').textContent = msg.accepted;
+            document.getElementById('gpuRejected').textContent = msg.rejected;
+            document.getElementById('gpuSpeed').innerHTML =
+                msg.tok_per_sec + '<span class="unit">tok/s</span>';
+            const rateStr = (msg.acceptance_rate * 100).toFixed(0);
+            addLog(`R${msg.round} GPU: ${msg.accepted}/${msg.accepted + msg.rejected} accepted (${rateStr}%)`, 'gpu');
+            break;
+        case 'result':
+            showResult(msg.data);
+            setPhase('done');
+            break;
+    }
+}
+
+function showRoundTokens(msg) {
+    const area = document.getElementById('tokenArea');
+    const roundDiv = document.createElement('div');
+    roundDiv.className = 'round-card ' +
+        (msg.acceptance_rate >= 0.8 ? 'good' : msg.acceptance_rate >= 0.4 ? 'partial' : 'miss');
+
+    const rateClass = msg.acceptance_rate >= 0.8 ? 'high' : msg.acceptance_rate >= 0.4 ? 'mid' : 'low';
+    const ratePct = (msg.acceptance_rate * 100).toFixed(0);
+
+    let header = `<div class="round-header">
+        <span class="label">Round ${msg.round} — ${msg.accepted + msg.rejected} tokens drafted</span>
+        <span class="rate ${rateClass}">${msg.accepted}/${msg.accepted + msg.rejected} accepted (${ratePct}%)</span>
+    </div>`;
+
+    let strip = '<div class="token-strip">';
+    if (msg.tokens) {
+        for (const t of msg.tokens) {
+            if (t.status === 'accepted') {
+                strip += `<div class="token-chip accepted">✓ ${t.draft_text}</div>`;
+            } else {
+                strip += `<div class="token-chip rejected">✗ ${t.draft_text} <span class="correction">→ ${t.gpu_text || '?'}</span></div>`;
+            }
+        }
+    }
+    strip += '</div>';
+
+    roundDiv.innerHTML = header + strip;
+    area.appendChild(roundDiv);
+}
+
+function setPhase(phase, round) {
+    ['phaseANE', 'phaseGPU', 'phaseResult'].forEach(id =>
+        document.getElementById(id).classList.remove('active', 'done'));
+    if (phase === 'draft') {
+        document.getElementById('phaseANE').classList.add('active');
+    } else if (phase === 'verify') {
+        document.getElementById('phaseANE').classList.add('done');
+        document.getElementById('phaseGPU').classList.add('active');
+    } else if (phase === 'done') {
+        ['phaseANE', 'phaseGPU', 'phaseResult'].forEach(id =>
+            document.getElementById(id).classList.add('done'));
+    }
+}
+
+function showResult(data) {
+    // Update big metrics
+    const ratePct = (data.acceptance_rate * 100).toFixed(0);
+    document.getElementById('acceptRate').innerHTML = ratePct + '<span class="unit">%</span>';
+    document.getElementById('roundCount').textContent = data.n_rounds;
+    document.getElementById('acceptFill').style.width = ratePct + '%';
+    document.getElementById('acceptFill').textContent =
+        ratePct + '% — ' + data.total_accepted + ' of ' +
+        (data.total_accepted + data.total_rejected) + ' tokens accepted';
+
+    // Response
+    const area = document.getElementById('responseArea');
+    area.innerHTML = `
+        <div class="response-card">
+            <div class="prompt-text">❯ ${data.prompt}</div>
+            <div class="response-text">${data.response || '(empty)'}</div>
+        </div>
+        <div class="response-card" style="border-left-color:#0066ff; margin-top:8px;">
+            <div class="prompt-text">GPU baseline:</div>
+            <div class="response-text" style="color:#888">${data.baseline_response || '(empty)'}</div>
+        </div>
+        <div class="metrics-grid" style="margin-top:12px">
+            <div class="metric good">
+                <div class="label">Spec Decode</div>
+                <div class="value">${data.total_time_ms}<span class="unit">ms</span></div>
+            </div>
+            <div class="metric gpu">
+                <div class="label">GPU Baseline</div>
+                <div class="value">${data.baseline_time_ms}<span class="unit">ms</span></div>
+            </div>
+            <div class="metric ane">
+                <div class="label">Tokens Generated</div>
+                <div class="value">${data.tokens_generated}</div>
+            </div>
+            <div class="metric good">
+                <div class="label">Acceptance</div>
+                <div class="value">${ratePct}<span class="unit">%</span></div>
+            </div>
+        </div>
+        <div class="pipeline-bar" style="margin-top:12px">
+            <div class="seg ane" style="width:${data.ane_time_ms / data.total_time_ms * 100}%">ANE ${data.ane_time_ms}ms</div>
+            <div class="seg gpu" style="width:${data.gpu_time_ms / data.total_time_ms * 100}%">GPU ${data.gpu_time_ms}ms</div>
+        </div>
+    `;
+
+    addLog(`Done: ${data.tokens_generated} tokens, ${ratePct}% accepted, ${data.n_rounds} rounds`, 'success');
+}
+
+function addLog(msg, cls = '') {
+    const log = document.getElementById('activityLog');
+    const time = new Date().toLocaleTimeString('en-US', {hour12: false});
+    log.innerHTML += `<div class="log-entry ${cls}"><span class="time">${time}</span>${msg}</div>`;
+    log.scrollTop = log.scrollHeight;
+}
+
+async function initSystem() {
+    const btn = document.getElementById('initBtn');
+    btn.disabled = true;
+    btn.textContent = 'Loading Qwen3-0.6B → ANE (215 kernels)...';
+    document.getElementById('statusBadge').textContent = 'COMPILING';
+    document.getElementById('statusBadge').className = 'status-badge init';
+
+    try {
+        const r = await fetch('/api/init', {method: 'POST'});
+        const data = await r.json();
+        if (data.success) {
+            initialized = true;
+            document.getElementById('genBtn').disabled = false;
+            document.getElementById('statusBadge').textContent = 'READY';
+            document.getElementById('statusBadge').className = 'status-badge ready';
+            btn.textContent = '✓ Qwen3-0.6B on ANE';
+            addLog('System ready — ANE (0.6B) + GPU (9B) initialized', 'success');
+        } else {
+            btn.textContent = '✗ Failed — click to retry';
+            btn.disabled = false;
+            addLog('Initialization failed', 'error');
+        }
+    } catch (e) {
+        btn.textContent = '✗ Error — click to retry';
+        btn.disabled = false;
+        addLog('Init error: ' + e.message, 'error');
+    }
+}
+
+async function generate() {
+    if (!initialized) return;
+    const prompt = document.getElementById('promptInput').value.trim();
+    if (!prompt) return;
+
+    document.getElementById('genBtn').disabled = true;
+    document.getElementById('tokenArea').innerHTML = '';
+
+    try {
+        const r = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({prompt, max_tokens: 30})
+        });
+        await r.json();
+    } catch (e) {
+        addLog('Generate error: ' + e.message, 'error');
+    }
+
+    document.getElementById('genBtn').disabled = false;
+}
+
+function setPrompt(text) {
+    document.getElementById('promptInput').value = text;
+}
+
+connectWS();
+</script>
+</body>
+</html>

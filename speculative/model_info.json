@@ -1,0 +1,12 @@
+{
+  "model_name": "Qwen/Qwen3-0.6B",
+  "dim": 1024,
+  "n_heads": 16,
+  "n_kv_heads": 8,
+  "head_dim": 128,
+  "hidden_dim": 3072,
+  "vocab_size": 151936,
+  "n_draft_layers": 28,
+  "n_kernels": 215,
+  "tok_per_sec": 9.431871027050462
+}

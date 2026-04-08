@@ -1,0 +1,1233 @@
+{
+  "_001df138804c389a08dc6f67112cad9b15228d51415c964e384102355b0ff784": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 66048,
+    "type": "Rate"
+  },
+  "_01038280d9d6c505432733b12946359b7c301c69b32369f4b921b6fa206c2211": {
+    "description": "Number of primitives being clipped due to having small triangles",
+    "flag": 1,
+    "name": "Small Triangle Clipped Primitives",
+    "partition": 20,
+    "select": 537395263,
+    "type": "Count"
+  },
+  "_01d049a728cff3c54b425c2839925c3f72de7d5110d2cd0b6823d0360fd8b0d4": {
+    "description": "Number of lossy compressed texture bytes from TC",
+    "flag": 1,
+    "name": "Lossy Compressed Texture Bytes Read from TC",
+    "partition": 5,
+    "select": 131073,
+    "type": "Count"
+  },
+  "_0427b329a9bf6f3b297e589bdebcd2e8a222101e677f95061e2fbe6fbe4ffa6f": {
+    "description": "Number of compressed texture samples",
+    "flag": 3,
+    "name": "Compressed Texture Samples",
+    "partition": 29,
+    "select": 92,
+    "type": "Count"
+  },
+  "_04d4411374e68233627aa77e33b97414d97097b7d3599dc0555f05e8ba0c27ad": {
+    "description": "Ratio of compressed to uncomressed texture memory read",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Read",
+    "partition": 5,
+    "select": 66048,
+    "type": "Rate"
+  },
+  "_06f73dd77cc4f21054a372b34a28a1d5d054ff7241ee73be67f927d897211048": {
+    "description": "Frag Tick for limiters",
+    "name": "Frag Ticks Count",
+    "partition": 11,
+    "select": 2,
+    "type": "Value"
+  },
+  "_0927651557827fd5468721c2ee04ff7924ebb553f9e0acc6b504a791aefdf935": {
+    "description": "% of texture samples with anisotropic filtering",
+    "flag": 1,
+    "name": "Anisotropic Samples %",
+    "partition": 29,
+    "select": 538446848,
+    "type": "Percentage"
+  },
+  "_0b4c966855c4b581f07ec85a1491cb234d31a838aaf82adc9427d3b2497bd31c": {
+    "description": "Number of compressed texture samples",
+    "flag": 3,
+    "name": "Compressed Texture Samples",
+    "partition": 29,
+    "select": 89,
+    "type": "Count"
+  },
+  "_0c33d520d54b5d5f84a71398d6ae71152426874088128bd3c18ad78df5f6d8b7": {
+    "description": "Number of pixels per triangle",
+    "flag": 1,
+    "name": "Pixel Per Triangle",
+    "partition": 21,
+    "select": 65568,
+    "type": "Rate"
+  },
+  "_0d5290b07753d1bbf223d0700438322c356bc6d3f028bf47df09e81f21da75c6": {
+    "description": "Total L2 bytes read in fragment shader",
+    "name": "FS L2 Bytes Read",
+    "partition": 15,
+    "select": 65540,
+    "type": "Value"
+  },
+  "_0f67618fe6dd59b9cc951584dc80dd9f5dd9c428402dbe2e8a03c7df4100020e": {
+    "description": "Total bytes read for depth / stencil textures from main memory",
+    "name": "Depth Stencil Texture Main Memory Bytes Read",
+    "partition": 17,
+    "select": 537527808,
+    "type": "Value"
+  },
+  "_0f9aab25f0863ace3de6f9832139250c806045a7ac0d6f8cf06c682c282005f1": {
+    "description": "Number of primitives being culled due to being off-screen",
+    "flag": 1,
+    "name": "Off-screen Cull Primitives",
+    "partition": 21,
+    "select": 69632,
+    "type": "Count"
+  },
+  "_127d5295001f8af60ca5165221e36d79521a187e9c43940c9ea618e0d2d7c316": {
+    "description": "Ratio of compressed to uncomressed texture memory read",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Read",
+    "partition": 5,
+    "select": 788480,
+    "type": "Rate"
+  },
+  "_1308feee43a7aae19c3764eb8928e79f464f3a2b9d1291b01c1bae25565fa93c": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 73728,
+    "type": "Percentage"
+  },
+  "_149b69750a3c80a27d163a4ca69ec03e3b39b3c0afe9c90c8cd37a128832cb13": {
+    "description": "Primitive tile intersection utilization",
+    "flag": 1,
+    "name": "Primitive Tile Intersection Utilization",
+    "partition": 20,
+    "select": 805953536,
+    "type": "Percentage"
+  },
+  "_14a170fde3d2efeda34d72f062b69852d6b927feb012e65ae602e9c41c3565ba": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538247216,
+    "type": "Rate"
+  },
+  "_1827ca25b7318e2df60eb0fe4f0c290b43054021ec3233e1fcdcf7b622fe4589": {
+    "description": "Ratio of compressed to uncomressed texture memory read",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Read",
+    "partition": 5,
+    "select": 65600,
+    "type": "Rate"
+  },
+  "_1b4a415305c5e09fd037b34e5c34c099f08044e780d5c06d813ce80cf354dafd": {
+    "description": "% of primitives being culled due to being back-facing",
+    "flag": 1,
+    "name": "Back-Facing Cull Primitives %",
+    "partition": 21,
+    "select": 198656,
+    "type": "Percentage"
+  },
+  "_20c8b2b1747ee9c33baf87dc32e8f5d07b9eb25ca5829ad056d92eb0d040c76a": {
+    "description": "MMU TLB misses expressed as a percentage of total MMU TLB requests. Large values may be due to random memory access pattern",
+    "name": "TLB Miss Rate",
+    "partition": 17,
+    "select": 196624,
+    "type": "Percentage"
+  },
+  "_23628149970030e181bfc592d170355b20bf26530773c5dc9481760b2c4158ea": {
+    "description": "Parameter Buffer Bytes Used",
+    "name": "Parameter Buffer Bytes Used",
+    "partition": 20,
+    "select": 331776,
+    "type": "Count"
+  },
+  "_2413cbfc3cf49db0f8a6cbaddb7f99118134a04d0a7bbfcf3e5c192276c68644": {
+    "description": "Measures the time during which primitive blocks are written to memory as a percentage of peak primitive block memory write performance.",
+    "name": "Primitive Blocks Write Limiter",
+    "partition": 20,
+    "select": 537333696,
+    "type": "Percentage"
+  },
+  "_24be79c8d8f70844505a88372d5027b6f8afd064ccbab97ac3ffe36dd5a0ef2b": {
+    "description": "Pre Z Fail Count",
+    "flag": 1,
+    "name": "Pre Z Fail Count",
+    "partition": 10,
+    "select": 655362,
+    "type": "Count"
+  },
+  "_257ec906bdb46e45679882d962be91fe1c161cb79df17ea71a7427b234a0b812": {
+    "description": "Parameter Buffer Bytes Used",
+    "name": "Parameter Buffer Bytes Used",
+    "partition": 20,
+    "select": 278528,
+    "type": "Count"
+  },
+  "_27cde4b049e15693c767899196a213dcd807878d655e33dde43ddff8910df32e": {
+    "description": "Measures the time during which primitive blocks are written to memory as a percentage of peak primitive block memory write performance.",
+    "name": "Primitive Blocks Write Limiter",
+    "partition": 20,
+    "select": 537329727,
+    "type": "Percentage"
+  },
+  "_29091329a1ff8f86d51ab9b84da709de18ba8aa1d94003a519a0663db7add4a1": {
+    "description": "% of primitives being culled due to being back-facing",
+    "flag": 1,
+    "name": "Back-Facing Cull Primitives %",
+    "partition": 21,
+    "select": 196624,
+    "type": "Percentage"
+  },
+  "_2b086decbf8af5fc652f38631028061547de9b4eab238b05cc6e26e20ba26444": {
+    "description": "Ratio of compressed to uncomressed depth/stencil texture memory written",
+    "name": "Compression Ratio of Z Texture Memory Written",
+    "partition": 17,
+    "select": 537722890,
+    "type": "Rate"
+  },
+  "_2d3c257f33af88b8488658fb5b6a86f64cb02169b680e1250d3f37d373a4197f": {
+    "description": "Number of total culled primitives",
+    "flag": 1,
+    "name": "Culled Primitives",
+    "partition": 20,
+    "select": 537460799,
+    "type": "Count"
+  },
+  "_2fab6f6232fd4f1349620047490c7562c852746134f1a6e53ca0510462394598": {
+    "description": "Texture cache miss count",
+    "flag": 1,
+    "name": "Texture Cache Read Misses",
+    "partition": 27,
+    "select": 65552,
+    "type": "Value"
+  },
+  "_3329a7bf90f5b81c24f86beffadfc66daefb2b2f45b08cdb822f931dac7370d6": {
+    "description": "Total L2 bytes read in fragment shader",
+    "name": "FS L2 Bytes Read",
+    "partition": 15,
+    "select": 65544,
+    "type": "Value"
+  },
+  "_3459b3e3f2f8a441719d05aae2161786eded99c72d7215bb6797f836d46a3426": {
+    "description": "Percentage of time L1 Texture Cache write access is a Miss for Fragment Shader",
+    "name": "Texture Cache Write Miss Rate in Fragment Shader",
+    "partition": 24,
+    "select": 262176,
+    "type": "Percentage"
+  },
+  "_346c9e2c1dd65c22e4dcdd48f80c681551c075280b02796f700601c4530e6f4f": {
+    "description": "Average number of lossy compressed FB regions for lossy compressed SB",
+    "flag": 1,
+    "name": "Average lossy compressed FB Regions for lossy compressed SB",
+    "partition": 3,
+    "select": 204800,
+    "type": "Rate"
+  },
+  "_37354b6e4ee3693b3b82dcc6cc0c4aaf5fbbdf1e2a44b7ce11d6ed6f45dad635": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 131088,
+    "type": "Percentage"
+  },
+  "_37b62c762d1c23168d0c25f1bc6033c6ee17922f5e31eab8d0cd946eb40ff5f3": {
+    "description": "Average unique colors per resolved pixels",
+    "flag": 1,
+    "name": "Average Unique Colors Per Resolved Pixels",
+    "partition": 24,
+    "select": 524290,
+    "type": "Rate"
+  },
+  "_3a25f8b9b9a3bb6fee419881039de7947be1fc155061f0ed642d5957df2c9221": {
+    "description": "Number of lossless compresed texture bytes from TC",
+    "name": "Lossless Compressed Texture Bytes Read from TC",
+    "partition": 5,
+    "select": 73728,
+    "type": "Count"
+  },
+  "_3b22188697e2c64b322decfb2df85c2cd7a7f264312a00737b10231811737d35": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538247180,
+    "type": "Rate"
+  },
+  "_3bd7a95222e8315bf62e84ba01a511e64bd7aa7487bed322a8ac96e4c4e628e1": {
+    "description": "Number of primitives being culled due to being off-screen",
+    "flag": 1,
+    "name": "Off-screen Cull Primitives",
+    "partition": 21,
+    "select": 131073,
+    "type": "Count"
+  },
+  "_3c6dba64fd85b35b8b8339f1d322943087d45cbb9b6689c587fd76259587a9d8": {
+    "description": "Total global atomic bytes read in fragment shader",
+    "name": "FS Global Atomic Bytes Read",
+    "partition": 15,
+    "select": 66560,
+    "type": "Value"
+  },
+  "_40680272e25f5a98ef1fdae57c0be82cc7fb940000907f1a4d46547de8525db0": {
+    "description": "Fragment Z unit bytes read",
+    "flag": 1,
+    "name": "Fragment Z Unit Bytes Read",
+    "partition": 11,
+    "select": 262148,
+    "type": "Value"
+  },
+  "_4167773bd45e5e4d7f626a716b9775f840b172225798dd96b00c6f7f0290d75e": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 15,
+    "select": 528384,
+    "type": "Rate"
+  },
+  "_416b2a4855c3ad10e45eaab8493e7651ad66f8e3d44ad880fa8111c87ccd090a": {
+    "description": "Samples shaded per quad",
+    "flag": 1,
+    "name": "Samples Shaded Per Quad",
+    "partition": 10,
+    "select": 917508,
+    "type": "Rate"
+  },
+  "_427543bc9ae51e5f3520629f8bbe54e3a18d14de616f0c418cf7190a55cd7d9c": {
+    "description": "Number of vertices being reused",
+    "flag": 1,
+    "name": "Vertices Reused",
+    "partition": 21,
+    "select": 536936478,
+    "type": "Count"
+  },
+  "_43fe12d20dfe3a9ea7b303773d624405e026e20b2c550822f2587997d2557f13": {
+    "description": "Total L2 bytes read in fragment shader",
+    "name": "FS L2 Bytes Read",
+    "partition": 15,
+    "select": 65552,
+    "type": "Value"
+  },
+  "_443fdcc2095b4dca2f7e327fb6af5914523d670164b66d05316044de82474149": {
+    "description": "Number of texture samples with nearest mipmap filter",
+    "flag": 1,
+    "name": "Mipmap Nearest Samples",
+    "partition": 29,
+    "select": 538316544,
+    "type": "Count"
+  },
+  "_448897b2730c90c177c3e468d3780d048b4ef0c6feb09887550eb9e5e71373c0": {
+    "description": "Pixel Overdraw",
+    "flag": 1,
+    "name": "Average Overdraw",
+    "partition": 10,
+    "select": 655364,
+    "type": "Count"
+  },
+  "_44e2790fe56248cd45e2248d0f69699da605c77fab749daf6c865f1ab5f16563": {
+    "description": "Percentage of times GPU\u2019s last level cache lookups are misses",
+    "name": "GPU Last Level Cache Limiter Miss Rate",
+    "partition": 15,
+    "select": 135168,
+    "type": "Percentage"
+  },
+  "_46210435e8bd691719dc45391f51ef552bf7e745c1401ee9943aa6f85086336e": {
+    "description": "% of primitives being culled due to being back-facing",
+    "flag": 1,
+    "name": "Back-Facing Cull Primitives %",
+    "partition": 21,
+    "select": 131074,
+    "type": "Percentage"
+  },
+  "_48d6a3135170e202f4c373f10c7fe2f4f35ae24a0feecef8accedc4f75fb7af4": {
+    "description": "Number of lossy compressed texture bytes from TC",
+    "flag": 1,
+    "name": "Lossy Compressed Texture Bytes Read from TC",
+    "partition": 5,
+    "select": 98304,
+    "type": "Count"
+  },
+  "_4b1f5c87264cd5cd23bb5eb652d21194fb7f49f9b1d70433f180b31a7a22dcab": {
+    "description": "Number of primitives being culled due to being outside guard band",
+    "flag": 1,
+    "name": "Guard Band Cull Primitives",
+    "partition": 21,
+    "select": 131076,
+    "type": "Count"
+  },
+  "_4bb4ab3f3e64c565175f4fbe0f75df41b12c3bc2b4242b99cd4a330773d475d4": {
+    "description": "Number of primitives being culled due to being outside guard band",
+    "flag": 1,
+    "name": "Guard Band Cull Primitives",
+    "partition": 21,
+    "select": 131080,
+    "type": "Count"
+  },
+  "_4e06778c6dbd312e12fd320be6a28037bd94e2cc19c8687aba8981ec52f7d19e": {
+    "description": "Number of lossy compressed texture samples",
+    "flag": 1,
+    "name": "Lossy Compressed Texture Samples",
+    "partition": 29,
+    "select": 538046464,
+    "type": "Count"
+  },
+  "_4e088158f4d8adbbe88420686b1cb8700f71b4a42277c8b25c3f00bb97008361": {
+    "description": "Number of compressed texture samples",
+    "flag": 3,
+    "name": "Compressed Texture Samples",
+    "partition": 29,
+    "select": 91,
+    "type": "Count"
+  },
+  "_50c5ccf70ef1ec17254253a456f052e1130edd339eee1dafe34fc8254d36b52a": {
+    "description": "Measures the time during which shaded vertices from vertex shader are read by primitive processing block as a percentage of peak shaded vertices read performance",
+    "name": "Shaded Vertex Read Limiter",
+    "partition": 21,
+    "select": 131584,
+    "type": "Percentage"
+  },
+  "_5139262f4aa51a2a266c84eae7b1d2a0524e10ec154ddf35e1e1bc529071258a": {
+    "description": "Number of lossless compressed SB, indicates possible B/W saving",
+    "flag": 1,
+    "name": "Percentage lossless compressed SB",
+    "partition": 3,
+    "select": 197632,
+    "type": "Percentage"
+  },
+  "_521de75bc49981f7ab61d82d53a01d20ce2675553dff5b641a368059601177b1": {
+    "description": "Total parameter manager reads from main memory",
+    "name": "Parameter Manager Reads From Main Memory",
+    "partition": 17,
+    "select": 622592,
+    "type": "Value"
+  },
+  "_5573f0ed078d893d618327787a93dccd1ac9197b27429c1a36a320ac1540db2a": {
+    "description": "Total global atomic instructions with return data in Fragment Shader",
+    "name": "FS Global Atomic Instructions With Return Data",
+    "partition": 15,
+    "select": 69632,
+    "type": "Value"
+  },
+  "_56a63abf333e0f9f06f1a00635d4125c3910b3c00286e4fb3652687402916c8a": {
+    "description": "Total L2 bytes written in fragment shader",
+    "name": "FS L2 Bytes Written",
+    "partition": 15,
+    "select": 65792,
+    "type": "Value"
+  },
+  "_57bf025a3b6e220efeee5fb9ecd97ad51c6adcccb96ca62426cc096e38eb9aa0": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538247360,
+    "type": "Rate"
+  },
+  "_5c5c55d05fb355aa5be61ac63c88eb4a2a521a47dd8f79c18b5c1df163d5cb55": {
+    "description": "Measures the time during which GPU\u2019s last level cache is attempting to service read and write requests as a percentage of cache\u2019s peak performance.",
+    "name": "GPU Last Level Cache Limiter",
+    "partition": 15,
+    "select": 65537,
+    "type": "Percentage"
+  },
+  "_5d5cf41f6d7d32235e797b13857ad1e9dfa3b04d83470ee5997d55d83e8107aa": {
+    "description": "Average number of lossy compressed FB regions for lossy compressed SB",
+    "flag": 1,
+    "name": "Average lossy compressed FB Regions for lossy compressed SB",
+    "partition": 3,
+    "select": 229376,
+    "type": "Rate"
+  },
+  "_6169af48fcc4f2c5d036243de6acd153bd0308c644bd7e4afc67499ad1aef2c7": {
+    "description": "% of primitives being culled due to being back-facing",
+    "flag": 1,
+    "name": "Back-Facing Cull Primitives %",
+    "partition": 21,
+    "select": 196640,
+    "type": "Percentage"
+  },
+  "_638ed0f36a4187b9ecad2646b42a73d9269d37f3458bf8140de61a5a5448252c": {
+    "description": "Total global atomic instructions with no return data in Fragment Shader",
+    "name": "FS Global Atomic Instructions With No Return Data",
+    "partition": 15,
+    "select": 73728,
+    "type": "Value"
+  },
+  "_63b721bdb7ff9f45f3835f7e6a8a4595b1fed0038ae9a76cb853fc36756386c9": {
+    "description": "Ratio of compressed to uncomressed depth/stencil texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Z Texture Memory Written",
+    "partition": 11,
+    "select": 262152,
+    "type": "Rate"
+  },
+  "_64a10cb112e74a4ec02f177b245e3f83edd61c0f78bc5bc7ae4978ce28f07f83": {
+    "description": "Fragment generator primitive processed per tile",
+    "flag": 1,
+    "name": "Fragment Generator Primitive Processed Per Tile",
+    "partition": 10,
+    "select": 851969,
+    "type": "Rate"
+  },
+  "_66eafb3ddb63687a1eef3817f25c70385aeb51f41d76b5cbdc5aa69a556bb76c": {
+    "description": "Number of 2xMSAA resolved pixels",
+    "flag": 1,
+    "name": "Number of 2xMSAA Resolved Pixels",
+    "partition": 24,
+    "select": 462848,
+    "type": "Count"
+  },
+  "_67d62b746943a02f8d4dc07a8183667897d2a5b27b2bb6fbb52cc1f27f1c53f7": {
+    "description": "Total bytes written for textures to main memory",
+    "name": "Texture Main Memory Bytes Written",
+    "partition": 17,
+    "select": 537596928,
+    "type": "Value"
+  },
+  "_6bb7d08e271a527bc1e586380563ec0de8de7e58c81e7b417ac1ecb39790c288": {
+    "description": "Average unique colors per resolved pixels",
+    "flag": 1,
+    "name": "Average Unique Colors Per Resolved Pixels",
+    "partition": 24,
+    "select": 524296,
+    "type": "Rate"
+  },
+  "_6d6a7c8efb15986fa71f8bf4a6a06f8942199b36680e516766e92490607c958d": {
+    "description": "Measures the time during which GPU is attempting to execute read and write requests through MMU due to last level cache misses as a percentage of peak MMU performance",
+    "name": "MMU Limiter",
+    "partition": 15,
+    "select": 131328,
+    "type": "Percentage"
+  },
+  "_6d86d89a09a872e62b809325d49d6967e2327aa5d1d4ea471d700f29696b9560": {
+    "description": "Texture sample utilization",
+    "name": "Texture Sample Utilization",
+    "partition": 29,
+    "select": 537198640,
+    "type": "Percentage"
+  },
+  "_719a713b390f2b37bbbe8ca62f3053819539a3fc60d05b02f21b2c8435fb73a6": {
+    "description": "Percentage of opaque quads processed out of total quads",
+    "flag": 1,
+    "name": "Opaque Fragment Quads Processed",
+    "partition": 10,
+    "select": 1118208,
+    "type": "Percentage"
+  },
+  "_732f9ae18abcb107b504911ba9abe0422500b581734d0a11f801be57da3a56b5": {
+    "description": "Number of uncompressed texture bytes from TC",
+    "name": "Uncompressed Texture Bytes Read from TC",
+    "partition": 5,
+    "select": 66560,
+    "type": "Count"
+  },
+  "_7646a8523871192073a29fb3af219f4dbddae3339e969e0da8ef8d84a3d46ec5": {
+    "description": "% FS Sample Limiter",
+    "name": "FS Sample Limiter",
+    "partition": 29,
+    "select": 537198652,
+    "type": "Percentage"
+  },
+  "_788f9865b6b4897849bedfd577403fe30b882c1c6c2afcdbf2a9f8a0d41e741b": {
+    "description": "Number of 4xMSAA resolved pixels",
+    "flag": 1,
+    "name": "Number of 4xMSAA Resolved Pixels",
+    "partition": 24,
+    "select": 466944,
+    "type": "Count"
+  },
+  "_792173079ffc5aacc2cea817d8812166e71ea17309e294d24ee2cc88d2fb1e8e": {
+    "description": "ALU performance in Giga Ops / Sec in compute shader",
+    "name": "CS ALU Performance",
+    "partition": 1,
+    "select": 4392,
+    "type": "Rate"
+  },
+  "_7c42e99464b33ee51de11bdd9f8cf11a14473f7061e75f7589a3578a7757abfd": {
+    "description": "Measures the time during which texture filtering is attempted to execute as a percentage of peak texture filtering performance.",
+    "name": "Texture Filtering Limiter",
+    "partition": 29,
+    "select": 537067519,
+    "type": "Percentage"
+  },
+  "_7cdc2c85e61923202c5936567bb447b8929b55e3fadd72277ff0796a99a7bdb4": {
+    "description": "Number of lossless compressed texture samples",
+    "flag": 1,
+    "name": "Lossless Compressed Texture Samples",
+    "partition": 29,
+    "select": 537988864,
+    "type": "Count"
+  },
+  "_7cef4e481233623472ea3e1f6b4131fabb20f247f7e5eae173dfd693aa60d0ff": {
+    "description": "Fragment Rasterizer utilization",
+    "flag": 1,
+    "name": "Fragment Rasterizer Utilization",
+    "partition": 10,
+    "select": 655361,
+    "type": "Percentage"
+  },
+  "_7df466c5ce6d100c121c263bbbff0effc1e4806f9bdb997e3c9b3c3bd4753064": {
+    "description": "Total bytes read from main memory",
+    "name": "Bytes Read From Main Memory",
+    "partition": 15,
+    "select": 131584,
+    "type": "Value"
+  },
+  "_7eba0657c66c2437c8d6952fb82117b9399d920ea84fa32c5bdc9d1dee49e290": {
+    "description": "Total bytes written to main memory",
+    "name": "Bytes Written To Main Memory",
+    "partition": 17,
+    "select": 852480,
+    "type": "Value"
+  },
+  "_838e506beb7a1376c2242cd5738a6016661bdfccb78c105f3ce081c89735bc9d": {
+    "description": "Number of texture samples with anisotropic filtering",
+    "flag": 1,
+    "name": "Anisotropic Samples",
+    "partition": 29,
+    "select": 538181680,
+    "type": "Count"
+  },
+  "_83b4492da25346ffc6c1820a633ef533874dda8e2939056928ffd92384775e38": {
+    "description": "Number of times compute shader is invoked",
+    "flag": 1,
+    "name": "CS Invocations",
+    "partition": 4,
+    "select": 805570559,
+    "type": "Count"
+  },
+  "_847829852334f2b320f2b2890d9a9c3dd7022b760b29a94540ba4fe13d1dd91a": {
+    "description": "Average Sparse Texture Request Size in KB",
+    "name": "Average Sparse Texture Request Size",
+    "partition": 25,
+    "select": 536937344,
+    "type": "Rate"
+  },
+  "_851e2825825612ac09e7b26350dc1b5b05998c3aab3198f4a2921768a84dfbbb": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538230784,
+    "type": "Rate"
+  },
+  "_867226b78b975653eb9f9d171ce53bedbf3edbc1ee1af8aa960cb9db4ec6490f": {
+    "description": "Percentage of time L1 Texture Cache access is a Miss",
+    "name": "FS Texture Cache Miss Rate",
+    "partition": 27,
+    "select": 537264127,
+    "type": "Percentage"
+  },
+  "_868dda8bb614bc2256251603b58ea88fa9ebfde94214a32cac586b56bc8a0fdc": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 65792,
+    "type": "Rate"
+  },
+  "_879d7622b5c9023712d7cc6c70f432757ab72505afba79be4dcb023459f9658a": {
+    "description": "Percentage of feedback quads processed out of total quads",
+    "flag": 1,
+    "name": "Feedback Fragment Quads Processed",
+    "partition": 10,
+    "select": 1146880,
+    "type": "Percentage"
+  },
+  "_883c062d224c59ccd4c4303a7caeacbd0aa87cd6fffd5347dfedb52a23f4a6e5": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 131073,
+    "type": "Percentage"
+  },
+  "_88723e1253a5c3264f69b1fbf3a6b7f3ab67bbd9fe97afeedb649146b3b8b043": {
+    "description": "Total L2 bytes written in fragment shader",
+    "name": "FS L2 Bytes Written",
+    "partition": 15,
+    "select": 65664,
+    "type": "Value"
+  },
+  "_88a70ef450a839c73c44e1ebf268aa13bf92a5179d6ff3ab45ac0006fa8544cd": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538193920,
+    "type": "Rate"
+  },
+  "_899b43f77bed0cc43134b61fcccca0925a0e62110b4bb7fae2c765efa3f9bbdc": {
+    "description": "Count number of partial renders in the encoder",
+    "flag": 1,
+    "name": "Partial Renders Count",
+    "partition": 20,
+    "select": 73728,
+    "type": "Count"
+  },
+  "_9153a820a764c5c32c10432035db3a4194ee169ef665e8fc7297bd5592b39e62": {
+    "description": "Total global atomic bytes written in fragment shader",
+    "name": "FS Global Atomic Bytes Written",
+    "partition": 15,
+    "select": 459008,
+    "type": "Value"
+  },
+  "_9177fce9b3d9e2a64a816854b3084588e4673c25a1c069c53b5909a77fb853eb": {
+    "description": "Number of fragments rasterized",
+    "flag": 1,
+    "name": "Fragments Rasterized",
+    "partition": 10,
+    "select": 983104,
+    "type": "Count"
+  },
+  "_92e4033c73762edd1ce117ae25bceecf0ae126712bf861ca430c8049f845b9ff": {
+    "description": "Average unique colors per resolved pixels",
+    "flag": 1,
+    "name": "Average Unique Colors Per Resolved Pixels",
+    "partition": 24,
+    "select": 524289,
+    "type": "Rate"
+  },
+  "_95457b9a60a638f3c652d16526373338287f19e3cb86adaea8a30e8255a7aa34": {
+    "description": "Ratio of compressed to uncomressed depth/stencil texture memory written",
+    "name": "Compression Ratio of Z Texture Memory Written",
+    "partition": 17,
+    "select": 537722885,
+    "type": "Rate"
+  },
+  "_984b0993354750161fe0018879ef125f6e3d98a5cbd800796dba5fb611df1651": {
+    "description": "Average unique colors per resolved pixels",
+    "flag": 1,
+    "name": "Average Unique Colors Per Resolved Pixels",
+    "partition": 24,
+    "select": 524292,
+    "type": "Rate"
+  },
+  "_9969883349fe2838e0be35dff1762942e9491b337c7b0ba46661003a330996ac": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 65600,
+    "type": "Rate"
+  },
+  "_9da983fb76d81017bb17c1307769e9cdaa3547cc33eadcf7f389043343c66b31": {
+    "description": "Percentage thread predicated out due to divergent control flow or small primitives covering part of quad in the render target on texture writes",
+    "flag": 1,
+    "name": "Predicated Texture Thread Writes",
+    "partition": 24,
+    "select": 524352,
+    "type": "Percentage"
+  },
+  "_9f4066c82340989d0ea535230ddae2a44d311837c37d0eb67d122b2c592e661f": {
+    "description": "Number of primitives being culled due to being back-facing",
+    "name": "Back-Facing Clipped Primitives",
+    "partition": 20,
+    "select": 537399232,
+    "type": "Count"
+  },
+  "_a126f888ccf5d17092b398420351fb81f0c5462f5e15a2bf22f6914208f68de2": {
+    "description": "Average number of lossy compressed FB regions for lossy compressed SB",
+    "flag": 1,
+    "name": "Average lossy compressed FB Regions for lossy compressed SB",
+    "partition": 3,
+    "select": 198656,
+    "type": "Rate"
+  },
+  "_a15872ac9b60de1aa5b2f8738fe49df926f782ead2f5f010124e3c141c961be3": {
+    "description": "Measures the time during which tiling block is busy processing primitive tile intersections as a percentage of peak tiling block performance.",
+    "name": "Tiling Block Limiter",
+    "partition": 20,
+    "select": 537137088,
+    "type": "Percentage"
+  },
+  "_a3104b8f0a1ab0931761cf851c8ac5ce3212eff30deff24a1f9a5ef67453adca": {
+    "description": "Number of times compute shader is invoked",
+    "flag": 1,
+    "name": "CS Invocations",
+    "partition": 4,
+    "select": 805636095,
+    "type": "Count"
+  },
+  "_a31cb764db94a67880e186b0fc9e1d9d13e2c06b08db3167a5475cb75163781d": {
+    "description": "Total parameter manager writes to main memory",
+    "name": "Parameter Manager Writes To Main Memory",
+    "partition": 17,
+    "select": 655361,
+    "type": "Value"
+  },
+  "_a7dd90063ddd29bf1b2d1259297cca0904b949cc92e9dee2e929fec2294f0422": {
+    "description": "Average Sparse Texture Request Size in KB",
+    "name": "Average Sparse Texture Request Size",
+    "partition": 25,
+    "select": 536943616,
+    "type": "Rate"
+  },
+  "_a7e72038471917bb4125254ae57103538d43fd9d4a233b06a1f248ca3bfc11ac": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538181824,
+    "type": "Rate"
+  },
+  "_aabc9758d4e52fd36dfb1a0e38171798aa7bf2ec665135dc298c1aa1a7c10760": {
+    "description": "Fragment Rasterizer utilization",
+    "flag": 1,
+    "name": "Fragment Rasterizer Utilization",
+    "partition": 10,
+    "select": 917505,
+    "type": "Percentage"
+  },
+  "_ac73411a986e90adcd0a1181ace1f2684e4a900be931343385b93f58de650db4": {
+    "description": "Total global atomic bytes read in fragment shader",
+    "name": "FS Global Atomic Bytes Read",
+    "partition": 15,
+    "select": 67584,
+    "type": "Value"
+  },
+  "_ad6b7a66022bb8efc6c01d6f3db0be8594408168905585015d8f7ab8e7efe672": {
+    "description": "Texture cache limiter",
+    "name": "Texture Cache Limiter",
+    "partition": 29,
+    "select": 537133055,
+    "type": "Percentage"
+  },
+  "_adcaa1bfdaea7d31b4a776ffd13089ba401d5c9c533c77378b5f378062215fdb": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 98304,
+    "type": "Percentage"
+  },
+  "_ae304fc8bce5708ffef30935687e442d6bea78f814055a5fe6e3380013d7e507": {
+    "description": "CS Texture samples",
+    "flag": 1,
+    "name": "CS Texture samples",
+    "partition": 29,
+    "select": 538509504,
+    "type": "Count"
+  },
+  "_b2f6334df9fdac01bda9fa44b127edadeb640750d6824c0b27a248d10aba3638": {
+    "description": "Average number of lossy compressed FB regions for lossy compressed SB",
+    "flag": 1,
+    "name": "Average lossy compressed FB Regions for lossy compressed SB",
+    "partition": 3,
+    "select": 200704,
+    "type": "Rate"
+  },
+  "_b466c606c4b7e98fcde3adad24a292c946f1f1130670918262ebf9f660e0173c": {
+    "description": "Number of primitives being culled due to being back-facing",
+    "flag": 1,
+    "name": "Back-Facing Cull Primitives",
+    "partition": 21,
+    "select": 98304,
+    "type": "Count"
+  },
+  "_b48ed13a188e430f6a5bd26a74642ceabd518b8d290fe8322ebc00a7671bef9d": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538247171,
+    "type": "Rate"
+  },
+  "_b4a97f86133bb31ea8cf25afb427cb7dc1fe52552105fcd8bc3c4aa7ad099a78": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 65544,
+    "type": "Rate"
+  },
+  "_b7afe579643b48d1495eb528fa5a78db4c0a065f75636f39f24f9cf4578912cf": {
+    "description": "Number of texture samples with linear mipmap filter",
+    "flag": 1,
+    "name": "Mipmap Linear Samples",
+    "partition": 29,
+    "select": 538374144,
+    "type": "Count"
+  },
+  "_b89bac942f8b36ffc2ca66b71168fcbc6ce13aaf07ffbb371c8176139128528d": {
+    "description": "Total bytes read for textures from main memory",
+    "name": "Texture Main Memory Bytes Read",
+    "partition": 17,
+    "select": 537526656,
+    "type": "Value"
+  },
+  "_ba0f7bef8431f94f98ea8587e522d4c8468e2bab9bc0be87d3b8b9ac97981db3": {
+    "description": "Number of lossy compressed texture bytes from TC",
+    "flag": 1,
+    "name": "Lossy Compressed Texture Bytes Read from TC",
+    "partition": 5,
+    "select": 81920,
+    "type": "Count"
+  },
+  "_ba42c3f46d52663d076f226bfb30be092b4b536d27d161d16869c10288811903": {
+    "description": "Measures the time during which primitives are clipped in clip unit as a percentage of peak primitive clip performance",
+    "name": "Primitive Clip Limiter",
+    "partition": 21,
+    "select": 264192,
+    "type": "Percentage"
+  },
+  "_ba686a2bead0a853932fbb1feeb87f6b3cabbfa17f2e647b7d6f92105f398c4d": {
+    "description": "Average number of lossy compressed FB regions for lossy compressed SB",
+    "flag": 1,
+    "name": "Average lossy compressed FB Regions for lossy compressed SB",
+    "partition": 3,
+    "select": 212992,
+    "type": "Rate"
+  },
+  "_bd9f890bd3bdbe08af5851fb3dfa228a36a5e54b72c7d74d5985af75bafa6217": {
+    "description": "Number of times compute shader is invoked",
+    "flag": 1,
+    "name": "CS Invocations",
+    "partition": 4,
+    "select": 805701631,
+    "type": "Count"
+  },
+  "_becc55001438de226fddc3e26ffa180fce103d635eb0f85ffbb6c01dbde954fd": {
+    "description": "Total bytes written for buffers from main memory",
+    "name": "Buffer Main Memory Bytes Written",
+    "partition": 17,
+    "select": 720898,
+    "type": "Value"
+  },
+  "_c3bf601f0a951d8e293718574d5f9ce5ddcb27d830ef81f6b018a3b933194ce1": {
+    "description": "Measures the time during which primitives are culled in cull unit as a percentage of peak primitive culling performance of cull unit",
+    "name": "Primitive Culling Limiter",
+    "partition": 21,
+    "select": 66560,
+    "type": "Percentage"
+  },
+  "_c420303ee3c2ea941491fa0a071ec1553251898524fce318c3635bc711160395": {
+    "description": "ALU Time in nSec per byte of main memory transfer in fragment shader",
+    "name": "FS Arithmetic Intensity",
+    "partition": 17,
+    "select": 852224,
+    "type": "Rate"
+  },
+  "_c788b8bd5d3e1ef8ad9501833f3b01bba5e1046e3e16d1a2aa837b76a60f19f4": {
+    "description": "Total bytes written for textures to main memory",
+    "name": "Texture Main Memory Bytes Written",
+    "partition": 17,
+    "select": 537594368,
+    "type": "Value"
+  },
+  "_c89f25b2a31116ea6540fc6b89b623da7d4cbc9b2349ce7dbe4423a1395da60a": {
+    "description": "Total bytes written to main memory",
+    "name": "Bytes Written To Main Memory",
+    "partition": 17,
+    "select": 590848,
+    "type": "Value"
+  },
+  "_c9b7b4db80ce4f449662cc8a655a128294ce8cb63a963492682ad9c02a338a46": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 69632,
+    "type": "Rate"
+  },
+  "_c9bcd5df6397dc8477a12ddf9358bccbbb3d8e52fc3dadab320be9bbb14fe157": {
+    "description": "Measures the time during which GPU\u2019s last level cache is attempting to service read and write requests as a percentage of cache\u2019s peak performance.",
+    "name": "GPU Last Level Cache Limiter",
+    "partition": 15,
+    "select": 200704,
+    "type": "Percentage"
+  },
+  "_ca0d54323c1777d994357aaacdb7beac572bea11cd16afed4c756f3dc9496a18": {
+    "description": "Percentage of feedback quads processed out of total quads",
+    "flag": 1,
+    "name": "Feedback Fragment Quads Processed",
+    "partition": 10,
+    "select": 1116160,
+    "type": "Percentage"
+  },
+  "_caec9e295218fa5a570b7305a1017d32f6a616ad77c0a70020afd5117af1a810": {
+    "description": "Percentage of time L1 Texture Cache write access is a Miss",
+    "name": "Texture Cache Write Miss Rate",
+    "partition": 24,
+    "select": 266240,
+    "type": "Percentage"
+  },
+  "_ce8d2278e7b086459bd4cccfe0b5c79b13ff287bf60e12cb62113d7478856b46": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538184704,
+    "type": "Rate"
+  },
+  "_d11d0ca656849a8048dbe7d1d6761d3cbcf463d9196a20b3da7e6a554fd0652f": {
+    "description": "Texture filtering utilization",
+    "name": "Texture Filtering Utilization",
+    "partition": 29,
+    "select": 537067264,
+    "type": "Percentage"
+  },
+  "_d1bc81f56d6b804a852adb705f1ef63549265bdfc317d5a3af98aaee0d8f8ef9": {
+    "description": "Vertices created by clipper",
+    "flag": 1,
+    "name": "Vertices Created By Clipper",
+    "partition": 21,
+    "select": 197632,
+    "type": "Count"
+  },
+  "_d2acb8217628c8c28df030d3f819e3831a16760dc5af79722487d789d9cbe02d": {
+    "description": "Average Sparse Texture Request Size in KB",
+    "name": "Average Sparse Texture Request Size",
+    "partition": 25,
+    "select": 536936560,
+    "type": "Rate"
+  },
+  "_d37f73c804be99f61d4e0d20151d2305f2c4fec5990853e47d56da4a0d75cb31": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 131080,
+    "type": "Percentage"
+  },
+  "_d54a22a6f6eb41ec901489f9e47263886645d322e2546360a6622d2c6bdeddb9": {
+    "description": "Texture cache utilization",
+    "name": "Texture Cache Utilization",
+    "partition": 29,
+    "select": 537067775,
+    "type": "Percentage"
+  },
+  "_d7a23701e11432625d46f02ff35668e60e55a7706704976facfe5fbeea3b1936": {
+    "description": "Total L2 bytes written in fragment shader",
+    "name": "FS L2 Bytes Written",
+    "partition": 15,
+    "select": 65600,
+    "type": "Value"
+  },
+  "_d7b92925765e8d20627989863f1b950ec5d6dffbd815c4c100730b3a7e7801fd": {
+    "description": "Number of primitives being culled due to being outside guard band",
+    "flag": 1,
+    "name": "Guard Band Cull Primitives",
+    "partition": 21,
+    "select": 131088,
+    "type": "Count"
+  },
+  "_d86114b5bc1b6abf8638dd305669a55d8b394e5709b8e33e585d73c184d18943": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538247936,
+    "type": "Rate"
+  },
+  "_da2d5f5fd43e7edda6d5635752a29f09d285cf47c2ecd0a1b83b1ba3eddcef55": {
+    "description": "Number of pixels per vertex",
+    "flag": 1,
+    "name": "Pixel To Vertex Ratio",
+    "partition": 21,
+    "select": 65600,
+    "type": "Rate"
+  },
+  "_da824fe9269c1efd80cb71a6e5415be160b6f43b41e858cb83976c4140b052a5": {
+    "description": "Tiles processed by tiling block",
+    "flag": 1,
+    "name": "Tiles Processed in Tiler",
+    "partition": 20,
+    "select": 537526287,
+    "type": "Value"
+  },
+  "_db1f507c85a72a4148283a69481d823edb23fbfb999acf18fb2d155eb7edc768": {
+    "description": "Percentage of feedback quads processed out of total quads",
+    "flag": 1,
+    "name": "Feedback Fragment Quads Processed",
+    "partition": 10,
+    "select": 1130496,
+    "type": "Percentage"
+  },
+  "_dbe3d527893309548e6eebdee711a622433c869e148727cf18e31ae63cf116d3": {
+    "description": "Number of primitives being culled due to being off-screen",
+    "flag": 1,
+    "name": "Off-screen Cull Primitives",
+    "partition": 21,
+    "select": 73728,
+    "type": "Count"
+  },
+  "_df20e560276a18cd9b97f03f47abf0d8bf719014920913d325c6ad5d4ab98453": {
+    "description": "Percentage of time L1 Texture Cache access is a Miss",
+    "flag": 1,
+    "name": "FS Texture Cache Miss Rate",
+    "partition": 27,
+    "select": 537329663,
+    "type": "Percentage"
+  },
+  "_e06b821bba710b56a3eaf194be742a6d964b111bb761426f6b1ebd16e227010e": {
+    "description": "Total bytes written for buffers from main memory",
+    "name": "Buffer Main Memory Bytes Written",
+    "partition": 17,
+    "select": 688128,
+    "type": "Value"
+  },
+  "_e247689f0b49c692ba39d348957d19faa7587b07d3025f3b283a165cfc35f5b8": {
+    "description": "MMU TLB Miss Rate",
+    "name": "MMU TLB Miss Rate",
+    "partition": 17,
+    "select": 196609,
+    "type": "Percentage"
+  },
+  "_e263044475c736413734a34bbc76c45c46960ed823cfa5696235ee862ce5b6ea": {
+    "description": "MMU TLB Hits",
+    "name": "MMU TLB Hits",
+    "partition": 17,
+    "select": 196610,
+    "type": "Count"
+  },
+  "_e319ade855d6fde34a28ecc2a2266f86d6d99b5e413e08b4884629844476c571": {
+    "description": "Number of times compute shader is invoked",
+    "flag": 1,
+    "name": "CS Invocations",
+    "partition": 4,
+    "select": 805505023,
+    "type": "Count"
+  },
+  "_e6362c1fcf78a3882ad4f3bbd5a66cfb0a6feeae2d8e84b4b161234e0b3aa335": {
+    "description": "Ratio of stalls caused by miss buffer fulls to MMU stalls",
+    "name": "Miss Buffer Full Stall Ratio",
+    "partition": 18,
+    "select": 65664,
+    "type": "Rate"
+  },
+  "_eda5bce70befa39e7c6029505c0269211092c220048a502fd8fa2fe30895465b": {
+    "description": "Pixel Overdraw",
+    "flag": 1,
+    "name": "Average Overdraw",
+    "partition": 10,
+    "select": 983072,
+    "type": "Count"
+  },
+  "_ee24ab3d92c84359c20d00d2061a37fcec736e1c550577f0529a9c9441a265dc": {
+    "description": "Sparse texture address translation limiter",
+    "name": "Sparse Texture Translation Limiter",
+    "partition": 25,
+    "select": 81920,
+    "type": "Percentage"
+  },
+  "_ef52925e500884ba6b276e576ae78b97fd8448dfadeba596c2202b5202e246c3": {
+    "description": "Total L2 bytes read in fragment shader",
+    "name": "FS L2 Bytes Read",
+    "partition": 15,
+    "select": 65538,
+    "type": "Value"
+  },
+  "_f4035ec10b022c926c9e5a14e4e2c08c16049d0e9474bf8b383ed109db7360d7": {
+    "description": "Texture cache miss limiter",
+    "name": "Texture Cache Miss Limiter",
+    "partition": 27,
+    "select": 65568,
+    "type": "Percentage"
+  },
+  "_f406f88bdd312ec0455d0943c388de77e53b86cf0109624b028c3aa596ec3bf4": {
+    "description": "Number of pixels written to memory",
+    "flag": 1,
+    "name": "Attachment Pixels Written to Memory",
+    "partition": 24,
+    "select": 524320,
+    "type": "Count"
+  },
+  "_f430991e42f778aeda210861eca9b8cef241898007339644eff469d83e5a6c9d": {
+    "description": "Percentage of time L1 Texture Cache write access is a Miss for Fragment Shader",
+    "name": "Texture Cache Write Miss Rate in Fragment Shader",
+    "partition": 24,
+    "select": 262656,
+    "type": "Percentage"
+  },
+  "_f46268d72ed52af703d1b490e193d71605d5c756930dfe9385a5433c9b4f264f": {
+    "description": "CS Texture samples",
+    "flag": 1,
+    "name": "CS Texture samples",
+    "partition": 29,
+    "select": 538378480,
+    "type": "Count"
+  },
+  "_f539a056fbd45e39d61b9d34af0ea1a305dd8af6f005b5aa29488f2c966e7f21": {
+    "description": "ALU Time in nSec per byte of main memory transfer in fragment shader",
+    "name": "FS Arithmetic Intensity",
+    "partition": 17,
+    "select": 537461504,
+    "type": "Rate"
+  },
+  "_f6c3f9b835930ff834f081ab2dfaacbdfbe451f6f2100abcdecec1c3c7999e0b": {
+    "description": "Number of draw calls",
+    "flag": 1,
+    "name": "Draw Calls",
+    "partition": 21,
+    "select": 65537,
+    "type": "Count"
+  },
+  "_f76e110e78dbd810843354c733691fcfcd8a5624a46d34e887797178f903ab95": {
+    "description": "Average Anisotropic Ratio",
+    "flag": 1,
+    "name": "Average Anisotropic Ratio",
+    "partition": 29,
+    "select": 538182400,
+    "type": "Rate"
+  },
+  "_f883d72b08be21c3348078baaa2362bec3884949a1726642308e7dd5cb69fe07": {
+    "description": "Measures the time during which tiling block is busy processing primitive tile intersections as a percentage of peak tiling block performance.",
+    "name": "Tiling Block Limiter",
+    "partition": 20,
+    "select": 537198655,
+    "type": "Percentage"
+  },
+  "_f8d12ed1fd4a2c10df5bc36ac39f6108a81c23c312389616fd2fa2fbf882c94a": {
+    "description": "Ratio of compressed to uncomressed texture memory written",
+    "flag": 1,
+    "name": "Compression Ratio of Texture Memory Written",
+    "partition": 3,
+    "select": 73728,
+    "type": "Rate"
+  },
+  "_fa01d5329f611805a99f4699e796d485f8f993df07816be0c8b15ac5e39951ea": {
+    "description": "Number of compressed texture samples",
+    "flag": 3,
+    "name": "Compressed Texture Samples",
+    "partition": 29,
+    "select": 88,
+    "type": "Count"
+  },
+  "_fa7f16c60620d451db8d71e3b82cab7253d2dbf1457c7966dbf002da9af010c0": {
+    "description": "Total bytes read for buffers from main memory",
+    "name": "Buffer Main Memory Bytes Read",
+    "partition": 17,
+    "select": 671744,
+    "type": "Value"
+  },
+  "_fade8eea03e1fbf9a3d3cd6ab6bfd82b70bc1595ffb23f1b638746baa6c672e0": {
+    "description": "Percentage of translucent quads processed out of total quads",
+    "flag": 1,
+    "name": "Translucent Fragment Quads Processed",
+    "partition": 10,
+    "select": 1122304,
+    "type": "Percentage"
+  },
+  "_fdc48a2370f6885da6ac169661812057de2cf71fbbbcb5df8348a78f112992dc": {
+    "description": "Measures the time during which GPU is attempting to execute read and write requests through MMU due to last level cache misses as a percentage of peak MMU performance",
+    "name": "MMU Limiter",
+    "partition": 15,
+    "select": 262148,
+    "type": "Percentage"
+  },
+  "_ffb81bec9c1a43cfe9f952f38103d1887bef653181bcb3c1362308492368933d": {
+    "description": "Measures the time during which shaded vertices from vertex shader are read by primitive processing block as a percentage of peak shaded vertices read performance",
+    "name": "Shaded Vertex Read Limiter",
+    "partition": 21,
+    "select": 131328,
+    "type": "Percentage"
+  }
+}

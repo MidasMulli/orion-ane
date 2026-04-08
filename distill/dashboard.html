@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ANE Distillation Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0a0e14;
+    color: #c0c8d8;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    overflow: hidden;
+    height: 100vh;
+}
+
+/* Grid layout */
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto 1fr 1fr 200px;
+    gap: 8px;
+    padding: 8px;
+    height: 100vh;
+}
+
+/* Header */
+.header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: linear-gradient(90deg, #0d1117 0%, #1a1f2e 50%, #0d1117 100%);
+    border: 1px solid #00ffcc33;
+    border-radius: 4px;
+}
+.header h1 {
+    font-size: 18px;
+    color: #00ffcc;
+    text-shadow: 0 0 10px #00ffcc44;
+    letter-spacing: 2px;
+}
+.header .status {
+    display: flex;
+    gap: 20px;
+    font-size: 12px;
+}
+.header .status .val { color: #00ffcc; font-weight: bold; }
+.header .status .label { color: #607080; }
+
+/* Panel */
+.panel {
+    background: #0d1117;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    padding: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #607080;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #1a2332;
+}
+.panel-title span { color: #00ffcc; }
+
+/* Charts */
+canvas { width: 100% !important; flex: 1; }
+
+/* Loss chart panel */
+.chart-loss { grid-column: 1 / 3; }
+
+/* Acceptance panel */
+.chart-accept { grid-column: 3; }
+
+/* Flow diagram */
+.flow-panel {
+    grid-column: 1 / -1;
+}
+.flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    height: 100%;
+    padding: 8px 0;
+}
+.flow-node {
+    background: #111822;
+    border: 1px solid #1a2332;
+    border-radius: 6px;
+    padding: 10px 16px;
+    text-align: center;
+    min-width: 140px;
+    position: relative;
+}
+.flow-node.active {
+    border-color: #00ffcc;
+    box-shadow: 0 0 12px #00ffcc22;
+}
+.flow-node.done {
+    border-color: #00cc8844;
+}
+.flow-node .node-title {
+    font-size: 11px;
+    color: #00ffcc;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.flow-node .node-detail {
+    font-size: 10px;
+    color: #607080;
+    margin-top: 4px;
+}
+.flow-node .node-value {
+    font-size: 16px;
+    color: #e0e8f0;
+    margin-top: 4px;
+    font-weight: bold;
+}
+.flow-arrow {
+    color: #1a2332;
+    font-size: 20px;
+    padding: 0 6px;
+}
+.flow-arrow.active { color: #00ffcc44; }
+
+/* Stats grid */
+.stats-panel { grid-column: 1; }
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    flex: 1;
+}
+.stat-box {
+    background: #111822;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    padding: 8px;
+    text-align: center;
+}
+.stat-box .stat-label {
+    font-size: 9px;
+    color: #607080;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.stat-box .stat-value {
+    font-size: 20px;
+    color: #00ffcc;
+    font-weight: bold;
+    margin-top: 2px;
+}
+.stat-box .stat-unit {
+    font-size: 9px;
+    color: #405060;
+}
+
+/* Gradient health */
+.gradient-panel { grid-column: 2; }
+.gradient-bars {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    justify-content: center;
+}
+.grad-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.grad-label {
+    font-size: 10px;
+    color: #607080;
+    width: 60px;
+    text-align: right;
+}
+.grad-bar-bg {
+    flex: 1;
+    height: 14px;
+    background: #111822;
+    border-radius: 2px;
+    overflow: hidden;
+}
+.grad-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #00ffcc, #00cc88);
+    border-radius: 2px;
+    transition: width 0.5s ease;
+}
+.grad-value {
+    font-size: 10px;
+    color: #c0c8d8;
+    width: 60px;
+}
+
+/* Log panel */
+.log-panel { grid-column: 3; }
+.log-content {
+    flex: 1;
+    overflow-y: auto;
+    font-size: 10px;
+    line-height: 1.6;
+}
+.log-content::-webkit-scrollbar { width: 4px; }
+.log-content::-webkit-scrollbar-track { background: #0d1117; }
+.log-content::-webkit-scrollbar-thumb { background: #1a2332; border-radius: 2px; }
+
+.log-entry { padding: 1px 0; }
+.log-time { color: #405060; }
+.log-msg { color: #c0c8d8; }
+.log-highlight { color: #00ffcc; }
+.log-warn { color: #ffaa00; }
+
+/* Activity log panel at bottom */
+.activity-panel {
+    grid-column: 1 / -1;
+}
+.activity-content {
+    flex: 1;
+    overflow-y: auto;
+    font-size: 11px;
+    font-family: monospace;
+    white-space: pre;
+    color: #607080;
+    line-height: 1.4;
+}
+.activity-content::-webkit-scrollbar { width: 4px; }
+.activity-content::-webkit-scrollbar-track { background: #0d1117; }
+.activity-content::-webkit-scrollbar-thumb { background: #1a2332; }
+</style>
+</head>
+<body>
+<div class="grid">
+    <!-- Header -->
+    <div class="header">
+        <h1>◆ ANE DISTILLATION</h1>
+        <div class="status">
+            <div><span class="label">TEACHER</span> <span class="val" id="hdr-teacher">Qwen3-4B</span></div>
+            <div><span class="label">STUDENT</span> <span class="val" id="hdr-student">Qwen3-0.6B</span></div>
+            <div><span class="label">STEP</span> <span class="val" id="hdr-step">0 / 0</span></div>
+            <div><span class="label">PHASE</span> <span class="val" id="hdr-phase">IDLE</span></div>
+            <div><span class="label">ETA</span> <span class="val" id="hdr-eta">--</span></div>
+        </div>
+    </div>
+
+    <!-- Flow Diagram -->
+    <div class="panel flow-panel">
+        <div class="panel-title"><span>◆</span> Pipeline Flow</div>
+        <div class="flow">
+            <div class="flow-node" id="fn-tokenize">
+                <div class="node-title">Tokenize</div>
+                <div class="node-detail">Qwen3 tokenizer</div>
+                <div class="node-value" id="fn-tokenize-val">--</div>
+            </div>
+            <div class="flow-arrow" id="fa-1">→</div>
+            <div class="flow-node" id="fn-teacher">
+                <div class="node-title">Teacher</div>
+                <div class="node-detail">4B GPU logits</div>
+                <div class="node-value" id="fn-teacher-val">--</div>
+            </div>
+            <div class="flow-arrow" id="fa-2">→</div>
+            <div class="flow-node" id="fn-import">
+                <div class="node-title">Import</div>
+                <div class="node-detail">HF → checkpoint</div>
+                <div class="node-value" id="fn-import-val">--</div>
+            </div>
+            <div class="flow-arrow" id="fa-3">→</div>
+            <div class="flow-node" id="fn-distill">
+                <div class="node-title">Distill</div>
+                <div class="node-detail">ANE train loop</div>
+                <div class="node-value" id="fn-distill-val">--</div>
+            </div>
+            <div class="flow-arrow" id="fa-4">→</div>
+            <div class="flow-node" id="fn-eval">
+                <div class="node-title">Evaluate</div>
+                <div class="node-detail">Spec decode test</div>
+                <div class="node-value" id="fn-eval-val">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loss Chart -->
+    <div class="panel chart-loss">
+        <div class="panel-title"><span>◆</span> Loss Curves</div>
+        <canvas id="lossChart"></canvas>
+    </div>
+
+    <!-- Acceptance Rate -->
+    <div class="panel chart-accept">
+        <div class="panel-title"><span>◆</span> Acceptance Rate</div>
+        <canvas id="acceptChart"></canvas>
+    </div>
+
+    <!-- Stats -->
+    <div class="panel stats-panel">
+        <div class="panel-title"><span>◆</span> Training Stats</div>
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-label">CE Loss</div>
+                <div class="stat-value" id="stat-ce">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">KL Loss</div>
+                <div class="stat-value" id="stat-kl">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Combined</div>
+                <div class="stat-value" id="stat-combined">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">ms/step</div>
+                <div class="stat-value" id="stat-ms">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Temperature</div>
+                <div class="stat-value" id="stat-temp">2.0</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">α (CE weight)</div>
+                <div class="stat-value" id="stat-alpha">0.5</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gradient Health -->
+    <div class="panel gradient-panel">
+        <div class="panel-title"><span>◆</span> Gradient Health</div>
+        <div class="gradient-bars">
+            <div class="grad-row">
+                <div class="grad-label">grad norm</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-norm" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-norm">--</div>
+            </div>
+            <div class="grad-row">
+                <div class="grad-label">x range</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-x" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-x">--</div>
+            </div>
+            <div class="grad-row">
+                <div class="grad-label">dy range</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-dy" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-dy">--</div>
+            </div>
+            <div class="grad-row">
+                <div class="grad-label">lr</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-lr" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-lr">--</div>
+            </div>
+            <div class="grad-row">
+                <div class="grad-label">ANE fwd</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-ane-fwd" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-ane-fwd">--</div>
+            </div>
+            <div class="grad-row">
+                <div class="grad-label">ANE bwd</div>
+                <div class="grad-bar-bg"><div class="grad-bar" id="gb-ane-bwd" style="width:0%"></div></div>
+                <div class="grad-value" id="gv-ane-bwd">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log -->
+    <div class="panel log-panel">
+        <div class="panel-title"><span>◆</span> Events</div>
+        <div class="log-content" id="log"></div>
+    </div>
+
+    <!-- Activity (raw output) -->
+    <div class="panel activity-panel">
+        <div class="panel-title"><span>◆</span> Raw Output</div>
+        <div class="activity-content" id="activity"></div>
+    </div>
+</div>
+
+<script>
+// ===== Chart setup (minimal, no external deps) =====
+class MiniChart {
+    constructor(canvasId, opts = {}) {
+        this.canvas = document.getElementById(canvasId);
+        this.ctx = this.canvas.getContext('2d');
+        this.series = {};
+        this.opts = Object.assign({
+            maxPoints: 500,
+            yMin: null,
+            yMax: null,
+            gridLines: 4,
+        }, opts);
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+    }
+
+    resize() {
+        const rect = this.canvas.parentElement.getBoundingClientRect();
+        this.canvas.width = rect.width - 24;
+        this.canvas.height = rect.height - 40;
+        this.draw();
+    }
+
+    addSeries(name, color) {
+        this.series[name] = { data: [], color };
+    }
+
+    push(name, value) {
+        if (!this.series[name]) return;
+        this.series[name].data.push(value);
+        if (this.series[name].data.length > this.opts.maxPoints)
+            this.series[name].data.shift();
+    }
+
+    draw() {
+        const ctx = this.ctx;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        const pad = { top: 10, right: 50, bottom: 20, left: 10 };
+
+        ctx.clearRect(0, 0, w, h);
+
+        // Find Y range across all series
+        let yMin = Infinity, yMax = -Infinity;
+        let maxLen = 0;
+        for (const s of Object.values(this.series)) {
+            for (const v of s.data) {
+                if (v < yMin) yMin = v;
+                if (v > yMax) yMax = v;
+            }
+            if (s.data.length > maxLen) maxLen = s.data.length;
+        }
+        if (this.opts.yMin !== null) yMin = this.opts.yMin;
+        if (this.opts.yMax !== null) yMax = this.opts.yMax;
+        if (yMin === yMax) { yMin -= 0.5; yMax += 0.5; }
+        const yRange = yMax - yMin;
+
+        // Grid
+        ctx.strokeStyle = '#1a233244';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= this.opts.gridLines; i++) {
+            const y = pad.top + (h - pad.top - pad.bottom) * i / this.opts.gridLines;
+            ctx.beginPath();
+            ctx.moveTo(pad.left, y);
+            ctx.lineTo(w - pad.right, y);
+            ctx.stroke();
+
+            // Label
+            const val = yMax - yRange * i / this.opts.gridLines;
+            ctx.fillStyle = '#405060';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(val.toFixed(2), w - pad.right + 4, y + 3);
+        }
+
+        // Series
+        const plotW = w - pad.left - pad.right;
+        const plotH = h - pad.top - pad.bottom;
+
+        for (const s of Object.values(this.series)) {
+            if (s.data.length < 2) continue;
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < s.data.length; i++) {
+                const x = pad.left + (i / (maxLen - 1)) * plotW;
+                const y = pad.top + (1 - (s.data[i] - yMin) / yRange) * plotH;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+}
+
+// Initialize charts
+const lossChart = new MiniChart('lossChart');
+lossChart.addSeries('ce', '#ff6b6b');
+lossChart.addSeries('kl', '#ffd93d');
+lossChart.addSeries('combined', '#00ffcc');
+
+const acceptChart = new MiniChart('acceptChart', { yMin: 0, yMax: 1.0 });
+acceptChart.addSeries('rate', '#00ffcc');
+acceptChart.addSeries('baseline', '#ff6b6b44');
+
+// Push baseline
+for (let i = 0; i < 100; i++) acceptChart.push('baseline', 0.483);
+
+// ===== State =====
+const state = {
+    phase: 'IDLE',
+    step: 0,
+    totalSteps: 0,
+    losses: [],
+    startTime: null,
+};
+
+function addLog(msg, type = '') {
+    const log = document.getElementById('log');
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const cls = type === 'highlight' ? 'log-highlight' : type === 'warn' ? 'log-warn' : 'log-msg';
+    log.innerHTML += `<div class="log-entry"><span class="log-time">${time}</span> <span class="${cls}">${msg}</span></div>`;
+    log.scrollTop = log.scrollHeight;
+}
+
+function addActivity(text) {
+    const act = document.getElementById('activity');
+    act.textContent += text + '\n';
+    act.scrollTop = act.scrollHeight;
+}
+
+function setFlowNode(id, status, value) {
+    const el = document.getElementById(id);
+    el.classList.remove('active', 'done');
+    if (status === 'active') el.classList.add('active');
+    if (status === 'done') el.classList.add('done');
+    if (value !== undefined) {
+        document.getElementById(id + '-val').textContent = value;
+    }
+}
+
+function setFlowArrow(id, active) {
+    const el = document.getElementById(id);
+    el.classList.toggle('active', active);
+}
+
+function updateHeader() {
+    document.getElementById('hdr-step').textContent = `${state.step} / ${state.totalSteps}`;
+    document.getElementById('hdr-phase').textContent = state.phase;
+
+    if (state.startTime && state.step > 0) {
+        const elapsed = (Date.now() - state.startTime) / 1000;
+        const rate = state.step / elapsed;
+        const remaining = (state.totalSteps - state.step) / rate;
+        const min = Math.floor(remaining / 60);
+        const sec = Math.floor(remaining % 60);
+        document.getElementById('hdr-eta').textContent = `${min}m ${sec}s`;
+    }
+}
+
+// ===== WebSocket connection to training monitor =====
+let ws = null;
+function connectWS() {
+    ws = new WebSocket('ws://localhost:8421');
+    ws.onopen = () => {
+        addLog('Connected to training monitor', 'highlight');
+        state.phase = 'CONNECTED';
+        updateHeader();
+    };
+    ws.onmessage = (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            handleMessage(msg);
+        } catch (err) {
+            addActivity(e.data);
+        }
+    };
+    ws.onclose = () => {
+        addLog('Disconnected — retrying in 3s...', 'warn');
+        setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => {};
+}
+
+function handleMessage(msg) {
+    switch (msg.type) {
+        case 'phase':
+            state.phase = msg.phase;
+            addLog(`Phase: ${msg.phase}`, 'highlight');
+            if (msg.phase === 'TOKENIZE') setFlowNode('fn-tokenize', 'active');
+            if (msg.phase === 'TEACHER') { setFlowNode('fn-tokenize', 'done'); setFlowNode('fn-teacher', 'active'); setFlowArrow('fa-1', true); }
+            if (msg.phase === 'IMPORT') setFlowNode('fn-import', 'active');
+            if (msg.phase === 'TRAINING') { setFlowNode('fn-teacher', 'done'); setFlowNode('fn-import', 'done'); setFlowNode('fn-distill', 'active'); setFlowArrow('fa-2', true); setFlowArrow('fa-3', true); }
+            if (msg.phase === 'EVAL') { setFlowNode('fn-distill', 'done'); setFlowNode('fn-eval', 'active'); setFlowArrow('fa-4', true); }
+            if (msg.phase === 'DONE') { setFlowNode('fn-eval', 'done'); }
+            updateHeader();
+            break;
+
+        case 'step':
+            state.step = msg.step;
+            state.totalSteps = msg.total_steps || state.totalSteps;
+            if (!state.startTime) state.startTime = Date.now();
+
+            if (msg.ce !== undefined) {
+                lossChart.push('ce', msg.ce);
+                document.getElementById('stat-ce').textContent = msg.ce.toFixed(4);
+            }
+            if (msg.kl !== undefined) {
+                lossChart.push('kl', msg.kl);
+                document.getElementById('stat-kl').textContent = msg.kl.toFixed(4);
+            }
+            if (msg.loss !== undefined) {
+                lossChart.push('combined', msg.loss);
+                document.getElementById('stat-combined').textContent = msg.loss.toFixed(4);
+            }
+            if (msg.ms !== undefined) {
+                document.getElementById('stat-ms').textContent = msg.ms.toFixed(0);
+            }
+            lossChart.draw();
+            setFlowNode('fn-distill', 'active', `${state.step}`);
+            updateHeader();
+            break;
+
+        case 'timing':
+            if (msg.ane_fwd !== undefined) {
+                const pct = Math.min(msg.ane_fwd / 300 * 100, 100);
+                document.getElementById('gb-ane-fwd').style.width = pct + '%';
+                document.getElementById('gv-ane-fwd').textContent = msg.ane_fwd.toFixed(0) + 'ms';
+            }
+            if (msg.ane_bwd !== undefined) {
+                const pct = Math.min(msg.ane_bwd / 300 * 100, 100);
+                document.getElementById('gb-ane-bwd').style.width = pct + '%';
+                document.getElementById('gv-ane-bwd').textContent = msg.ane_bwd.toFixed(0) + 'ms';
+            }
+            if (msg.grad_norm !== undefined) {
+                const pct = Math.min(msg.grad_norm / 10 * 100, 100);
+                document.getElementById('gb-norm').style.width = pct + '%';
+                document.getElementById('gv-norm').textContent = msg.grad_norm.toFixed(3);
+            }
+            if (msg.lr !== undefined) {
+                document.getElementById('gv-lr').textContent = msg.lr.toExponential(1);
+                document.getElementById('gb-lr').style.width = Math.min(msg.lr / 3e-4 * 100, 100) + '%';
+            }
+            if (msg.x_range !== undefined) {
+                document.getElementById('gv-x').textContent = `[${msg.x_range[0].toFixed(1)}, ${msg.x_range[1].toFixed(1)}]`;
+                document.getElementById('gb-x').style.width = Math.min(msg.x_range[1] / 50 * 100, 100) + '%';
+            }
+            if (msg.dy_range !== undefined) {
+                document.getElementById('gv-dy').textContent = `[${msg.dy_range[0].toExponential(1)}, ${msg.dy_range[1].toExponential(1)}]`;
+                document.getElementById('gb-dy').style.width = '50%';
+            }
+            break;
+
+        case 'accept':
+            acceptChart.push('rate', msg.rate);
+            acceptChart.draw();
+            setFlowNode('fn-eval', 'active', (msg.rate * 100).toFixed(0) + '%');
+            break;
+
+        case 'log':
+            addLog(msg.text, msg.level || '');
+            break;
+
+        case 'progress':
+            addActivity(msg.text);
+            if (msg.node) setFlowNode(msg.node, 'active', msg.value);
+            break;
+    }
+}
+
+// ===== Demo mode (simulated data for layout testing) =====
+function runDemo() {
+    addLog('Demo mode — no training server detected', 'warn');
+    addLog('Simulating distillation pipeline...', 'highlight');
+
+    state.phase = 'TRAINING';
+    state.totalSteps = 200;
+    state.startTime = Date.now();
+
+    setFlowNode('fn-tokenize', 'done', '1M tok');
+    setFlowNode('fn-teacher', 'done', '200 seq');
+    setFlowNode('fn-import', 'done', '6.8 GB');
+    setFlowArrow('fa-1', true);
+    setFlowArrow('fa-2', true);
+    setFlowArrow('fa-3', true);
+
+    document.getElementById('stat-temp').textContent = '2.0';
+    document.getElementById('stat-alpha').textContent = '0.50';
+
+    let step = 0;
+    const interval = setInterval(() => {
+        step++;
+        if (step > 200) { clearInterval(interval); return; }
+
+        // Simulate decreasing losses
+        const ce = 6.0 * Math.exp(-step / 80) + 2.5 + Math.random() * 0.3;
+        const kl = 4.0 * Math.exp(-step / 60) + 0.5 + Math.random() * 0.2;
+        const combined = 0.5 * ce + 0.5 * kl;
+        const ms = 400 + Math.random() * 40;
+
+        handleMessage({
+            type: 'step',
+            step, total_steps: 200,
+            ce, kl, loss: combined, ms
+        });
+
+        if (step % 5 === 0) {
+            handleMessage({
+                type: 'timing',
+                ane_fwd: 120 + Math.random() * 30,
+                ane_bwd: 180 + Math.random() * 40,
+                grad_norm: 2.0 * Math.exp(-step / 100) + 0.5 + Math.random() * 0.3,
+                lr: 1e-4 * Math.min(step / 20, 1),
+                x_range: [-10 - Math.random() * 5, 10 + Math.random() * 5],
+                dy_range: [-0.01 * Math.exp(-step/80), 0.01 * Math.exp(-step/80)],
+            });
+        }
+
+        if (step % 10 === 0) {
+            addLog(`Step ${step}: CE=${ce.toFixed(3)} KL=${kl.toFixed(3)} combined=${combined.toFixed(3)}`, 'highlight');
+        }
+    }, 100);
+
+    // Simulated acceptance rate improvement
+    setTimeout(() => {
+        state.phase = 'EVAL';
+        setFlowNode('fn-distill', 'done', '200');
+        setFlowArrow('fa-4', true);
+        updateHeader();
+        addLog('Evaluating acceptance rate...', 'highlight');
+
+        let evalStep = 0;
+        const evalInterval = setInterval(() => {
+            evalStep++;
+            if (evalStep > 30) {
+                clearInterval(evalInterval);
+                setFlowNode('fn-eval', 'done', '72%');
+                state.phase = 'DONE';
+                addLog('Distillation complete! Acceptance: 48% → 72%', 'highlight');
+                updateHeader();
+                return;
+            }
+            const rate = 0.48 + 0.24 * (evalStep / 30) + Math.random() * 0.05;
+            handleMessage({ type: 'accept', rate: Math.min(rate, 0.82) });
+        }, 200);
+    }, 22000);
+}
+
+// Try to connect, fall back to demo
+addLog('Connecting to ws://localhost:8421...', '');
+setTimeout(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        runDemo();
+    }
+}, 2000);
+try { connectWS(); } catch(e) { setTimeout(runDemo, 1000); }
+</script>
+</body>
+</html>

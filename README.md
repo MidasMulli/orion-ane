@@ -1,229 +1,85 @@
-# ANE Training — Backpropagation on Apple Neural Engine
+# orion-ane
 
-Training neural networks directly on Apple's Neural Engine (ANE) via reverse-engineered private APIs. No CoreML training APIs, no Metal, no GPU — pure ANE compute.
+Cognitive architecture for local LLM agents on Apple Silicon. Five model tiers running concurrently on a single MacBook Pro M5 Pro, coordinated by a self-correcting memory system that the agent never sees but the user benefits from on every turn.
 
-## Project Scope & Intent
-
-I'm genuinely grateful for all the attention this project has received — I never expected a weekend research hack to blow up like this. Thank you to everyone who starred, forked, ran benchmarks on their own hardware, and shared the work. It means a lot.
-
-That said, I want to set clear expectations about what this project is and isn't.
-
-This is a **research project**, not a production framework.
-
-The goal was to demonstrate that **training on the Apple Neural Engine — and potentially other NPUs — is possible**, and that the barrier has always been software support, not hardware capability. The ANE is a remarkably capable piece of silicon that Apple restricts to inference-only use through CoreML. This project bypasses that restriction using reverse-engineered private APIs to show what's possible when you give the hardware a chance.
-
-### What This Project Is
-
-- A proof of concept for ANE training via `_ANEClient` and `_ANECompiler` private APIs
-- A set of benchmarks documenting real ANE performance characteristics (throughput, power, SRAM behavior)
-- A reference for anyone exploring direct ANE access outside CoreML
-- Research code that I update when I find something interesting
-
-### What This Project Is Not
-
-- A maintained framework or library
-- A replacement for CoreML, MLX, llama.cpp, or any production inference stack
-- A path to training large models on consumer hardware (yet)
-
-### On The Hype
-
-Some coverage of this project has overstated its implications. To be clear:
-
-- Training works, but utilization is low (~5-9% of peak) with significant engineering challenges remaining
-- Many element-wise operations still fall back to CPU
-- This does **not** replace GPU training for anything beyond small research models today
-
-The honest results — including all limitations — are documented in the accompanying articles:
-- [Part 1: Reverse Engineering](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine)
-- [Part 2: Benchmarks](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
-- [Part 3: Training](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b)
-
-### On Maintenance
-
-I don't intend to grow this into a large community project. My focus is on original research (compiler infrastructure for edge AI optimization), and maintaining an open-source framework takes time away from that.
-
-That said:
-- I'll keep pushing updates when I discover something interesting
-- Bug fixes and benchmark contributions (especially on hardware I don't own) are welcome
-- Feature requests will likely go unaddressed — but feel free to fork
-- PRs will be merged at a relatively slow pace, otherwise I become the bottleneck for community growth around this tech
-
-### Fork it, build on it
-
-This is MIT licensed for a reason. Everyone now has access to AI-assisted development tools that can adapt and extend code in hours. If this project is useful to you — take it, modify it, build something better. If you do something cool with it, I'd love to hear about it.If in future, community decides to maintain one source of truth repo, I'm in full support of that.
+Zero cloud. Zero contention. Sub-millisecond memory recall. The agent that uses this stack is **Midas** — a research partner that remembers what was shipped, what was killed, and what's still open across sessions.
 
 ---
 
-## What This Is
+## Stack
 
-A from-scratch implementation of transformer training (forward + backward pass) running on the ANE in Apple Silicon. The ANE is a 15.8 TFLOPS FP16 (M4) inference accelerator that Apple does not expose for training. This project reverse-engineers the `_ANEClient` / `_ANECompiler` private APIs and the MIL (Model Intermediate Language) format to run custom compute graphs — including backpropagation — directly on ANE hardware.
+| Tier | Model | Hardware | Role | Speed |
+|---|---|---|---|---|
+| **Verifier** | Qwen 2.5-72B-Instruct-4bit | GPU (MLX-Metal) | conversation + reasoning | 6.5 cold / 8-36 warm tok/s |
+| **Extractor** | Llama 3.1-8B-Instruct Q8 | ANE (CoreML, 72 dispatches) | typed fact extraction for the Subconscious | 7.9 tok/s |
+| **Embedder** | MiniLM-L6-v2 | ANE (CoreML, CPU_AND_NE) | retrieval embedding | **0.84 ms/embed** (1,197 embeds/s) |
+| **Classifier** | Neuron 80M (FFN-only) | ANE SRAM | domain routing | **905 µs** |
+| **Drafter** | N-gram (truncate-on-miss, K=16) | software | spec decode | +17.3% over raw 5.32 tok/s baseline |
 
-**Current results:**
+The verifier's prompt cache integration (Main 25) snapshots the system + briefing KV state on first turn and reuses it on every subsequent turn. **~30 seconds of TTFT eliminated per turn** at production briefing scale.
 
-| Model | Params | ms/step | Pipeline |
-|-------|--------|---------|----------|
-| Stories110M (12L, dim=768, MHA 12/12) | 109M | **91 ms** | Dynamic (no recompile) |
-| Qwen3-0.6B (28L, dim=1024, GQA 16/8) | 596M | **412 ms** | Dynamic (no recompile) |
+---
 
-- All forward and backward dx passes on ANE, dW gradients on CPU (Accelerate cblas)
-- Adam optimizer, gradient accumulation, checkpoint/resume via exec() restart
-- GQA (Grouped-Query Attention) support with per-head tiling/reduction
-- GPU↔ANE zero-copy pipeline via shared IOSurface (GPU prefill → ANE decode)
+## Subconscious — the cognitive memory layer
 
-**INT8 W8A8 quantization — 1.88x throughput (M4, H16G):**
+The agent's primary product. The user never sees it; they just notice the agent remembers what they shipped.
 
-| Config | FP16 | INT8 W8A8 | Speedup |
-|--------|------|-----------|---------|
-| 128x conv 512ch 64x64 | 18.6 TOPS, 14.8ms | 35.1 TOPS, 7.8ms | **1.88x** |
-| 64x conv 512ch 64x64 | 18.4 TOPS, 7.5ms | 34.1 TOPS, 4.0ms | **1.85x** |
+- **5,000+ memories** in `LocalMemoryStore` (SQLite WAL + in-memory float32 numpy matrix). 13.9 MB on disk. Sub-ms cosine via single matmul. Replaced ChromaDB in Main 24.
+- **Multi-path 5-signal retrieval** — `embedding (0.35) + entity (0.25) + type (0.15) + impact (0.15) + recency (0.10)` with `1.30x` canonical-state boost and activity-query category override.
+- **Structured atom storage** — every memory has `atom_type`, `atom_entities`, `atom_impacts`, `atom_tense`, `atom_confidence`, `atom_core`, `source_role`. Retrieval uses all of them.
+- **9 maintenance feedback loops** running hourly via launchd:
+  1. `decay_scores` — exponential decay on relevance
+  2. `consolidate_duplicates` — merge near-duplicate facts
+  3. `resolve_contradictions` — 70B contradiction resolver during idle time
+  4. `vault_sync` — supersede memories that conflict with the canonical knowledge files
+  5. `production_state_sync` — sync the live infrastructure state into memory
+  6. `semantic_supersession` — 3-signal paraphrase-aware supersession (cosine + tense + restate-vs-contradict)
+  7. `canonical_state_inject` — parse `CLAUDE.md` tables into first-class canonical memories
+  8. `meta_memory_inject` — parse session-log bullets into first-class activity memories ("what did we ship today")
+  9. `vault_sweep` — surface deliverables on disk that no knowledge file references (closes the "completed work, never wired" recurring failure mode)
+- **100% cross-session continuity** measured across 5 conversation sessions: 6/6 references resolved, 24/24 turns coherent, zero hallucinated events.
+- See [`vault/subconscious`](https://github.com/MidasMulli/subconscious) for the loop implementations.
 
-INT8 activations halve L2 SRAM bandwidth between tiles via MIL `quantize`/`dequantize` ops. Weights use `constexpr_affine_dequantize` (int8 stored, fp16 at compile time).
+---
 
-## Architecture
+## Midas — the agent that uses the stack
 
-The dynamic pipeline uses shared ANE kernels with weights packed into spatial dimensions (no recompilation when weights change):
+`agent/midas_ui.py` runs a Flask web UI on `:8450` (network-accessible from any device on the LAN) and exposes the agent over a simple `/api/chat` endpoint.
 
-**MHA models (Stories110M) — 6 kernels per layer:**
+- **Deterministic L1+L2 router** (`agent/router.py`) — keyword patterns for 90% of routing decisions, falling back to a single-word LLM classifier only when no L1 pattern matches. Tool args constructed in code, not by the LLM.
+- **Cognitive context assembly** (`agent/briefing_assembler.py`, `agent/synthesizer.py`) — stable per-session briefing built from the canonical memory state, refreshed every 5 turns. Per-query memories ride in the user message tail to avoid invalidating the verifier's prefix cache.
+- **Streaming SSE** with sliding-window incremental decode (no O(n²) tokenizer.decode bug).
+- **Continuous embedding PoC** (`agent/continuous_embed.py`) — streams a 72B response, embeds the partial output every N tokens via the CoreML MiniLM, retrieves top-K, logs mid-generation discoveries. **0.5% wall overhead at N=4** over a 164-token generation.
+- **Self-observation tools** — `self_test`, `brain_snapshot`, `self_improve` are first-class tools the agent can call on itself.
 
-| Kernel | Function |
-|--------|----------|
-| `sdpaFwd` | QKV projection + SDPA + output projection |
-| `ffnFused` | SwiGLU FFN (W1, W3, SiLU, W2) |
-| `ffnBwdW2t` / `ffnBwdW13t` | FFN backward (split for memory) |
-| `sdpaBwd1` / `sdpaBwd2` | SDPA backward |
+---
 
-**GQA models (Qwen3-0.6B) — 10 kernels per layer:**
-Adds separate `woFwd`, `qBwd`, `kvBwd` kernels for grouped-query attention (Q_DIM ≠ DIM).
+## Hardware
 
-CPU handles: RMSNorm forward/backward, residual connections (DeepNet α scaling), loss computation, dW gradient accumulation (cblas_sgemm), Adam optimizer updates.
+MacBook Pro M5 Pro · 64 GB unified memory · 18 CPU cores (6P + 12S) · 20 GPU cores · Metal 4 · 307 GB/s DRAM · ANE dedicated 111 GB/s DMA channel
 
-Key optimizations:
-- **Channel-first CPU layout** — matches ANE IOSurface `[1,C,1,S]` format, eliminates all transpose overhead
-- **vDSP vectorized RMSNorm** — 10x faster than naive (6.7ms → 0.7ms)
-- **GCD async cblas overlap** — dW gradient sgemms run in parallel with ANE evals on a serial dispatch queue
-- **Deferred cblas wait** — wait pushed into next step's forward pass for maximum overlap
-- **ANE RMSNorm fusion** — RMSNorm folded into forward kernels as MIL ops (reduce_sum + pow + mul)
-- **Wo^T fusion** — output projection backward merged into SDPA backward kernel
-- **Forward taps** — Q, K, V, attention scores, hidden states exposed via concat outputs, avoiding CPU recompute
-- **exec() restart** — bypasses ~119 ANE compile limit per process
+Cross-accelerator contention measured at **+2.4% (within noise)** when GPU is idle vs busy — the ANE is bandwidth-isolated, not bandwidth-shared.
 
-## File Structure
+---
 
-```
-├── api_exploration.m           # Initial ANE API discovery
-├── inmem_basic.m               # In-memory MIL compilation proof-of-concept
-├── inmem_bench.m               # ANE dispatch latency benchmarks
-├── inmem_peak.m                # Peak TFLOPS measurement (2048x2048 matmul)
-├── ane_int8_bench.m            # INT8 W8A8 vs FP16 throughput benchmark
-├── sram_bench.m                # ANE SRAM bandwidth probing
-├── sram_probe.m                # SRAM size/layout exploration
-├── gpu_ane_share.m             # GPU↔ANE zero-copy IOSurface demo
-├── gpu_prefill_ane_decode.m    # GPU prefill → ANE decode pipeline
-├── bridge/
-│   ├── ane_bridge.h            # C-callable ANE API (compile, eval, I/O)
-│   ├── ane_bridge.m            # Bridge implementation (int8 + fp16 weight blobs)
-│   └── Makefile
-└── training/
-    ├── ane_runtime.h           # ANE private API wrapper (compile, eval, IOSurface)
-    ├── ane_classifier.h        # Classifier fwd (32K conv), softmax, rmsnorm on ANE
-    ├── train_large.m           # Static pipeline (weights as constants, recompiles)
-    ├── training_dynamic/
-    │   ├── train.m             # Dynamic training loop (model-agnostic)
-    │   ├── config.h            # Derived sizes, structs, alloc helpers
-    │   ├── mil_dynamic.h       # MIL generators for dynamic weight kernels (GQA-aware)
-    │   ├── io.h                # IOSurface I/O, weight staging, GQA tile/reduce
-    │   ├── models/
-    │   │   ├── stories110m.h   # Stories110M config (12L, MHA)
-    │   │   └── qwen3_06b.h    # Qwen3-0.6B config (28L, GQA)
-    │   └── Makefile
-    ├── dashboard.py            # Live training dashboard (blessed TUI)
-    └── Makefile
-```
+## Project status
 
-## Training Data
+The architecture and measurements behind this stack are submitted as a paper, **"Every Cycle Counts"**, awaiting arXiv endorsement at the time of writing. The paper covers heterogeneous cognitive architecture on Apple Silicon, 83% system recall on the gold set, 100% cross-session continuity, and the −4.7% concurrent contention floor.
 
-Training requires pretokenized TinyStories data. To download:
-```bash
-cd training && bash download_data.sh
-```
-See [training/README.md](training/README.md) for detailed training instructions.
+The cognitive memory system is the primary product. The agent is the proof-of-concept. The hardware probes that landed in `nax-probe/` are the explanation for *why* this stack outperforms naive single-model deployment on the same machine.
 
-## Building
+---
 
-Requires macOS 15+ on Apple Silicon (tested on M4).
+## Related repos
 
-```bash
-# Dynamic pipeline (recommended) — model selected at build time
-cd training/training_dynamic
-make MODEL=stories110m    # Stories110M (12L, MHA, 109M params)
-make MODEL=qwen3_06b      # Qwen3-0.6B (28L, GQA, 596M params)
-./train --scratch          # train from random init
-./train --resume           # resume from checkpoint
-
-# Static pipeline (legacy — recompiles weights each step)
-cd training && make train_large
-./train_large ane_stories110M_ckpt.bin 256 100 1e-4
-
-# INT8 benchmark
-xcrun clang -O2 -fobjc-arc -framework Foundation -framework IOSurface -ldl \
-  -o ane_int8_bench ane_int8_bench.m
-./ane_int8_bench
-
-# Bridge library (C-callable ANE API)
-cd bridge && make
-```
-
-No external dependencies. Uses only system frameworks + private ANE APIs resolved at runtime via `objc_msgSend`.
-
-## How It Works
-
-1. **MIL generation** — Objective-C code constructs MIL program text at runtime, specifying convolutions (for linear layers), matmul (for attention), softmax, element-wise ops
-2. **In-memory compilation** — `_ANEInMemoryModelDescriptor` compiles MIL text + weight blobs directly to ANE programs, no disk mlmodelc needed
-3. **IOSurface I/O** — Input/output tensors passed via IOSurface shared memory in `[1, channels, 1, spatial]` format (fp16 or fp32; fp16 direct I/O is ~37% faster)
-4. **Dynamic weights** — Activations and weights packed into a single spatial input dimension, sliced apart inside the MIL kernel. Weights change without recompilation.
-5. **Gradient flow** — Forward taps expose intermediates needed for backward; backward kernels compute dx (input gradients) on ANE; dW (weight gradients) computed on CPU via cblas
-6. **INT8 quantization** — `constexpr_affine_dequantize` for int8 weights, `quantize`/`dequantize` between layers for int8 activation caching in L2 SRAM (1.88x throughput)
-
-## Limitations
-
-- **SDPA causal masking** — ANE hardware ignores `attn_mask` in SDPA ops; causal attention is decomposed into separate Q@K^T (ANE) → mask+softmax (CPU) → scores@V (ANE)
-- **~119 compile limit** — ANE compiler leaks resources; worked around via `exec()` restart with checkpoint
-- **FP16 gradient underflow** — backward matmuls underflow in fp16; fixed with global loss scaling (`256 * NLAYERS`)
-- **Single-input constraint** — multi-input ANE requests cause 0x1d error; inputs packed into spatial dimension instead
-
-## Performance
-
-**Training throughput (M4):**
-
-| Model | Params | ms/step | Layers | Kernels/layer |
-|-------|--------|---------|--------|---------------|
-| Stories110M | 109M | 91 ms | 12 | 6 (MHA) |
-| Qwen3-0.6B | 596M | 412 ms | 28 | 10 (GQA) |
-
-**ANE peak throughput (M4, H16G):**
-
-| Precision | Peak TOPS | Config |
-|-----------|-----------|--------|
-| FP16 | 18.6 | 128x conv 512ch 64x64 |
-| INT8 W8A8 | 35.1 | 128x conv 512ch 64x64 |
-
-**GPU↔ANE inference pipeline (M4, seq=256):**
-
-| Model | GPU Prefill | ANE Decode | Total |
-|-------|------------|------------|-------|
-| Stories110M | 6.7ms | 1.9ms | 8.8ms |
-| Qwen3-0.6B | 9.7ms | 2.3ms | 12.0ms |
-
-## Disclaimer
-
-This project uses Apple's private, undocumented APIs (`_ANEClient`, `_ANECompiler`, `_ANEInMemoryModelDescriptor`). These APIs are not covered by any public stability guarantee and may change or break with any macOS update. This is independent research into Apple Neural Engine architecture, using APIs discovered through runtime introspection for research and educational purposes under fair use and interoperability provisions (see *Sega v. Accolade*, 1992; DMCA §1201(f)). No Apple proprietary code or binaries are included in this repository. This project is not affiliated with or endorsed by Apple Inc. Use at your own risk.
+- [subconscious](https://github.com/MidasMulli/subconscious) — the cognitive memory loops, separate package
+- [ane-compiler](https://github.com/MidasMulli/ane-compiler) — model builder + fusion optimizer + dispatch orchestrator (GPT-2 229 tok/s, Llama-1B 50.2 tok/s, Llama-8B Q8 7.9 tok/s, Neuron 1,064 tok/s)
+- [ane-dispatch](https://github.com/MidasMulli/ane-dispatch) — direct ANE dispatch + SharedEvents (37% faster than CoreML)
+- [ane-toolkit](https://github.com/MidasMulli/ane-toolkit) — IOKit protocol decoder + Mach-O .hwx tooling
+- [four-path-mlx](https://github.com/MidasMulli/four-path-mlx) — multi-source speculative decoding server — the inference-level results that the NAX hardware data explains
+- [gdn-coreml](https://github.com/MidasMulli/gdn-coreml) — GatedDeltaNet SSM to CoreML converter for same-family ANE drafting
+- [ane-perf](https://github.com/MidasMulli/ane-perf) — ANE hardware performance characterization via IOReport bandwidth histograms
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
-
----
-
-*Built by a human + Claude, one weekend at a time.*
-
-
+MIT.

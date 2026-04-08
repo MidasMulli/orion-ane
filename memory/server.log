@@ -1,0 +1,34 @@
+/Users/midas/Desktop/cowork/anemll/env-anemll/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+23:24:28 [INFO] Loading models from /Users/midas/Desktop/cowork/anemll/models/qwen3-1.7b-coreml/meta.yaml ...
+23:24:28 [INFO] Models loaded in 0.6s
+23:24:28 [INFO] Warming up ANE...
+23:24:29 [INFO] Warmup complete
+23:24:29 [INFO] Backend: ANE generative (Qwen3-1.7B)
+23:24:29 [INFO] Socket server listening on /tmp/orion-ane-server.sock
+23:24:29 [INFO] HTTP server on http://localhost:8423
+23:24:29 [INFO] Ready — Socket: /tmp/orion-ane-server.sock, HTTP: http://localhost:8423
+23:24:29 [INFO] Press Ctrl+C to stop
+Exception in thread Thread-2:
+Traceback (most recent call last):
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 973, in _bootstrap_inner
+    self.run()
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 910, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/midas/Desktop/cowork/orion-ane/memory/ane_server.py", line 518, in _run
+    web.run_app(app, host="0.0.0.0", port=self.port, print=None, handle_signals=False)
+  File "/Users/midas/Desktop/cowork/anemll/env-anemll/lib/python3.9/site-packages/aiohttp/web.py", line 517, in run_app
+    loop.run_until_complete(main_task)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py", line 642, in run_until_complete
+    return future.result()
+  File "/Users/midas/Desktop/cowork/anemll/env-anemll/lib/python3.9/site-packages/aiohttp/web.py", line 510, in run_app
+    loop.run_until_complete(main_task)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py", line 642, in run_until_complete
+    return future.result()
+  File "/Users/midas/Desktop/cowork/anemll/env-anemll/lib/python3.9/site-packages/aiohttp/web.py", line 412, in _run_app
+    await site.start()
+  File "/Users/midas/Desktop/cowork/anemll/env-anemll/lib/python3.9/site-packages/aiohttp/web_runner.py", line 121, in start
+    self._server = await loop.create_server(
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py", line 1494, in create_server
+    raise OSError(err.errno, 'error while attempting '
+OSError: [Errno 48] error while attempting to bind on address ('0.0.0.0', 8423): address already in use

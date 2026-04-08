@@ -283,6 +283,52 @@ void ane_bridge_reset_compile_count(void) {
     g_compile_count = 0;
 }
 
+// ── Direct IOSurface access ──────────────────────────────────────────
+
+void *ane_bridge_lock_input(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nInputs) return NULL;
+    IOSurfaceLock(kernel->ioInputs[idx], 0, NULL);
+    return IOSurfaceGetBaseAddress(kernel->ioInputs[idx]);
+}
+
+void ane_bridge_unlock_input(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nInputs) return;
+    IOSurfaceUnlock(kernel->ioInputs[idx], 0, NULL);
+}
+
+const void *ane_bridge_lock_output(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nOutputs) return NULL;
+    IOSurfaceLock(kernel->ioOutputs[idx], kIOSurfaceLockReadOnly, NULL);
+    return IOSurfaceGetBaseAddress(kernel->ioOutputs[idx]);
+}
+
+void ane_bridge_unlock_output(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nOutputs) return;
+    IOSurfaceUnlock(kernel->ioOutputs[idx], kIOSurfaceLockReadOnly, NULL);
+}
+
+size_t ane_bridge_input_size(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nInputs) return 0;
+    return kernel->inputBytes[idx];
+}
+
+size_t ane_bridge_output_size(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nOutputs) return 0;
+    return kernel->outputBytes[idx];
+}
+
+void *ane_bridge_get_input_base(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nInputs) return NULL;
+    return IOSurfaceGetBaseAddress(kernel->ioInputs[idx]);
+}
+
+void *ane_bridge_get_output_base(ANEKernelHandle *kernel, int idx) {
+    if (!kernel || idx < 0 || idx >= kernel->nOutputs) return NULL;
+    return IOSurfaceGetBaseAddress(kernel->ioOutputs[idx]);
+}
+
+// ── Weight blob builders ─────────────────────────────────────────────
+
 uint8_t *ane_bridge_build_weight_blob(const float *src, int rows, int cols,
                                        size_t *out_len) {
     int wsize = rows * cols * 2; // fp16
