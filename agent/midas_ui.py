@@ -44,6 +44,7 @@ from router import route, layer1_route
 from tool_executor import execute, set_memory, set_browser
 from synthesizer import synthesize
 from idle_queue import IdleQueue
+import research_tools
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -540,6 +541,152 @@ def api_chat():
         except Exception as e:
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
+
+
+# ── /api/research — Midas Researcher v1 (Main 27 close) ────────────────────
+#
+# Agentic read-only research loop. The 70B verifier on :8899 plans tool calls,
+# we dispatch them, append results to the rolling context, re-prompt, and stop
+# when FINAL_REPORT: is emitted or the iteration cap is hit. Tools are read-
+# only (grep, read_file, list_dir, recall_memory) and sandboxed to ~/cowork.
+#
+# Designed to be delegated to from external agents (e.g. CC subagent loop):
+# POST a research goal, get back {report, trace, iterations, elapsed_s}. The
+# trace lets the caller audit what Midas actually verified vs hallucinated.
+#
+# Calibration history lives in vault/CLAUDE_session_log.md and the auto-memory
+# `finding_midas_calibration.md`. The first calibration question is the 8B
+# fusion target enumeration that motivated this build.
+
+RESEARCHER_SYSTEM_PROMPT = """You are Midas Researcher, an agentic research assistant with read-only access to a software-engineering codebase under /Users/midas/Desktop/cowork. Your job is to investigate a research question by iteratively calling tools, gathering evidence, and producing a final report grounded in real file:line citations.
+
+""" + research_tools.TOOL_CATALOG + """
+
+Rules:
+1. Call ONE tool per turn. Wait for the result before calling the next.
+2. Plan first. Before your first tool call, write a 1-3 sentence plan.
+3. Cite file:line for every code claim in the final report. No fabricated citations.
+4. Memory recall is for priors; current code state MUST be verified with grep or read_file.
+5. If you cannot answer a sub-question after 3 tool calls, say so explicitly in the report.
+6. Stop and emit FINAL_REPORT: as soon as you have sufficient evidence. Do not pad.
+7. The iteration cap is 15 turns. Plan accordingly.
+"""
+
+RESEARCHER_MAX_ITERS = 15
+RESEARCHER_MAX_WALL_S = 240
+RESEARCHER_TOOL_RESULT_CHARS = 6000  # truncate big results to keep context manageable
+
+
+def _parse_tool_call(text):
+    """Extract a TOOL_CALL: {...} JSON object or detect FINAL_REPORT:.
+    Returns ('tool', tool_name, args) or ('final', report_text) or ('none', raw_text).
+    """
+    if not text:
+        return ("none", "")
+    # Final report?
+    final_match = re.search(r'FINAL_REPORT:\s*(.*)', text, re.DOTALL)
+    if final_match:
+        return ("final", final_match.group(1).strip())
+    # Tool call?
+    tc_match = re.search(r'TOOL_CALL:\s*(\{.*?\})\s*(?:\n|$)', text, re.DOTALL)
+    if tc_match:
+        try:
+            obj = json.loads(tc_match.group(1))
+            tool = obj.get("tool")
+            args = obj.get("args", {})
+            if not tool:
+                return ("none", text)
+            return ("tool", tool, args)
+        except json.JSONDecodeError:
+            # Try a more permissive single-line parse
+            line_match = re.search(r'TOOL_CALL:\s*(\{[^\n]*\})', text)
+            if line_match:
+                try:
+                    obj = json.loads(line_match.group(1))
+                    return ("tool", obj.get("tool"), obj.get("args", {}))
+                except json.JSONDecodeError:
+                    pass
+    return ("none", text)
+
+
+@app.route("/api/research", methods=["POST"])
+def api_research():
+    """Run a directed research loop with read-only tools.
+
+    Request: {"goal": "...", "max_iters": 15 (optional), "max_wall_s": 240 (opt)}
+    Response: {"report": "...", "trace": [...], "iterations": N, "elapsed_s": F,
+               "stop_reason": "final|cap|wall|error", "tool_calls": N}
+    """
+    data = request.get_json() or {}
+    goal = (data.get("goal") or "").strip()
+    if not goal:
+        return jsonify({"error": "empty goal"}), 400
+
+    max_iters = min(int(data.get("max_iters", RESEARCHER_MAX_ITERS)), 30)
+    max_wall = min(float(data.get("max_wall_s", RESEARCHER_MAX_WALL_S)), 600)
+
+    started = time.time()
+    trace = []
+    messages = [
+        {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Research goal:\n\n{goal}\n\nBegin with your plan, then your first tool call."},
+    ]
+
+    stop_reason = "cap"
+    final_report = None
+    tool_call_count = 0
+
+    for iteration in range(1, max_iters + 1):
+        if time.time() - started > max_wall:
+            stop_reason = "wall"
+            break
+
+        try:
+            assistant_text = llm_fn(messages, max_tokens=1200, temperature=0.2)
+        except Exception as e:
+            trace.append({"iter": iteration, "kind": "error", "detail": f"LLM call failed: {type(e).__name__}: {e}"})
+            stop_reason = "error"
+            break
+
+        parsed = _parse_tool_call(assistant_text)
+        messages.append({"role": "assistant", "content": assistant_text})
+        trace.append({"iter": iteration, "kind": "assistant", "text": assistant_text})
+
+        if parsed[0] == "final":
+            final_report = parsed[1]
+            stop_reason = "final"
+            break
+        elif parsed[0] == "tool":
+            _, tool_name, args = parsed
+            tool_call_count += 1
+            try:
+                result = research_tools.dispatch(tool_name, args, memory_bridge=memory)
+            except Exception as e:
+                result = f"ERROR: tool dispatch raised {type(e).__name__}: {e}"
+            if len(result) > RESEARCHER_TOOL_RESULT_CHARS:
+                result = result[:RESEARCHER_TOOL_RESULT_CHARS] + f"\n... (truncated; total was {len(result)} chars)"
+            trace.append({"iter": iteration, "kind": "tool", "tool": tool_name, "args": args, "result": result})
+            messages.append({
+                "role": "user",
+                "content": f"TOOL_RESULT ({tool_name}):\n{result}\n\nContinue. Call the next tool, or emit FINAL_REPORT: when done."
+            })
+        else:
+            # Model emitted neither TOOL_CALL nor FINAL_REPORT — nudge it.
+            trace.append({"iter": iteration, "kind": "nudge"})
+            messages.append({
+                "role": "user",
+                "content": "You did not emit a TOOL_CALL or FINAL_REPORT. Either call a tool with TOOL_CALL: {...} or emit FINAL_REPORT: followed by your report. Pick one and continue."
+            })
+
+    elapsed = time.time() - started
+    return jsonify({
+        "report": final_report or "(no final report — loop ended via " + stop_reason + ")",
+        "trace": trace,
+        "iterations": iteration,
+        "tool_calls": tool_call_count,
+        "elapsed_s": round(elapsed, 2),
+        "stop_reason": stop_reason,
+    })
 
 
 @app.route("/api/chat/stream", methods=["POST"])
