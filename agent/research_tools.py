@@ -73,7 +73,13 @@ def tool_grep(pattern: str, glob: str | None = None, path: str | None = None) ->
 
 
 def tool_read_file(path: str, offset: int = 1, limit: int = 200) -> str:
-    """Read a file from the sandbox. offset is 1-indexed, limit is line count."""
+    """Read a file from the sandbox. offset is 1-indexed, limit is line count.
+
+    Calibration test 2 fix: large files (e.g. 1.2 MB ioreport_catalog.json) are
+    now read by line-streaming when offset + limit are specified, instead of
+    slurping the whole file. The 1MB whole-file guard only applies to "read
+    whole file" requests (offset==1 AND limit large enough to cover the file).
+    """
     p = _safe_resolve(path)
     if p is None:
         return f"ERROR: path '{path}' is outside the sandbox or invalid"
@@ -85,20 +91,37 @@ def tool_read_file(path: str, offset: int = 1, limit: int = 200) -> str:
         size = p.stat().st_size
     except OSError as e:
         return f"ERROR: stat failed: {e}"
-    if size > MAX_FILE_BYTES * 5:
-        return f"ERROR: file is {size} bytes — too large to read directly. Use grep with a specific pattern."
+
+    start_line = max(1, int(offset))
+    line_limit = max(1, int(limit))
+    end_line = start_line + line_limit  # exclusive
+
+    # Stream line-by-line so big files are fine when offset+limit slices a window
+    chunk = []
+    total = 0
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh, start=1):
+                total = i
+                if i >= start_line and i < end_line:
+                    chunk.append(line.rstrip("\n"))
+                # Don't bail early — we still want a meaningful "of N" total.
+                # But cap the work: if file is huge AND we already have what we need,
+                # AND we're past line 200000, stop counting (saves CPU on multi-MB files)
+                if i >= end_line and i > 200_000 and i > end_line + 1000:
+                    total = -1  # signals "unknown total, very large"
+                    break
     except OSError as e:
         return f"ERROR: read failed: {e}"
-    all_lines = text.splitlines()
-    total = len(all_lines)
-    start = max(1, int(offset)) - 1
-    end = min(total, start + max(1, int(limit)))
-    chunk = all_lines[start:end]
+
+    if not chunk:
+        return f"ERROR: offset {start_line} is past EOF (file has {total} lines, {size} bytes)"
+
     rel = str(p.relative_to(COWORK_ROOT))
-    header = f"{rel} (lines {start+1}-{end} of {total})"
-    numbered = "\n".join(f"{start+i+1}\t{line}" for i, line in enumerate(chunk))
+    actual_end = start_line + len(chunk) - 1
+    total_str = f"{total}" if total > 0 else "unknown (very large file, scan stopped)"
+    header = f"{rel} (lines {start_line}-{actual_end} of {total_str}, file {size} B)"
+    numbered = "\n".join(f"{start_line+i}\t{line}" for i, line in enumerate(chunk))
     body = numbered if len(numbered) <= MAX_FILE_BYTES else numbered[:MAX_FILE_BYTES] + "\n... (truncated)"
     return f"{header}\n{body}"
 

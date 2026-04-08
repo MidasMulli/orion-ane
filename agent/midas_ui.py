@@ -81,12 +81,15 @@ _idle_queue = None  # Initialized after memory.start()
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
-def _llm_call(messages, max_tokens, temperature):
-    payload = json.dumps({
+def _llm_call(messages, max_tokens, temperature, stop=None):
+    body = {
         "model": MLX_MODEL, "messages": messages,
         "max_tokens": max_tokens, "temperature": temperature,
         "repetition_penalty": 1.35,
-    }).encode()
+    }
+    if stop:
+        body["stop"] = stop
+    payload = json.dumps(body).encode()
     last_err = None
     for attempt in range(3):
         try:
@@ -107,9 +110,9 @@ def _llm_call(messages, max_tokens, temperature):
     raise last_err
 
 
-def llm_fn(messages, max_tokens=1500, temperature=0.7, **_kw):
+def llm_fn(messages, max_tokens=1500, temperature=0.7, stop=None, **_kw):
     global _last_stats
-    data = _llm_call(messages, max_tokens, temperature)
+    data = _llm_call(messages, max_tokens, temperature, stop=stop)
     _last_stats = data.get("x_spec_decode", {})
     return data["choices"][0]["message"]["content"] or ""
 
@@ -567,45 +570,105 @@ Rules:
 2. Plan first. Before your first tool call, write a 1-3 sentence plan.
 3. Cite file:line for every code claim in the final report. No fabricated citations.
 4. Memory recall is for priors; current code state MUST be verified with grep or read_file.
-5. If you cannot answer a sub-question after 3 tool calls, say so explicitly in the report.
-6. Stop and emit FINAL_REPORT: as soon as you have sufficient evidence. Do not pad.
-7. The iteration cap is 15 turns. Plan accordingly.
+5. If a sub-claim cannot be verified after 3 tool calls, mark it UNVERIFIED in the report and move on. Do not loop.
+6. **STOP CRITERION: as soon as you have ONE concrete grep or read_file result that supports or refutes a claim, that claim is RESOLVED. Do not seek confirmation from a second source. Emit FINAL_REPORT: as soon as every claim is resolved or marked UNVERIFIED.** Padding is failure. Looping past resolution is failure.
+7. The iteration cap is 18 turns and the wall clock cap is 480 seconds. Budget accordingly.
+8. The FINAL_REPORT marker MUST be at the start of a line. Do not put the literal string "FINAL_REPORT:" anywhere else in your output until you are actually finalizing.
 """
 
-RESEARCHER_MAX_ITERS = 15
-RESEARCHER_MAX_WALL_S = 240
+RESEARCHER_MAX_ITERS = 18
+RESEARCHER_MAX_WALL_S = 480
 RESEARCHER_TOOL_RESULT_CHARS = 6000  # truncate big results to keep context manageable
+
+
+def _strip_chat_template_tokens(text):
+    """Remove Qwen/Llama special tokens and any post-EOS hallucinated turns.
+
+    Calibration test 1 showed the 70B emits `<|im_end|>` after a tool call
+    JSON and then hallucinates a fake `Human: ... Assistant: ...` turn from
+    its training distribution. We need to truncate at the first EOS marker
+    before parsing TOOL_CALL / FINAL_REPORT, otherwise the parser sees noise
+    and the FINAL_REPORT regex matches echoed nudge-prompt text.
+    """
+    if not text:
+        return ""
+    for marker in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "</s>"]:
+        idx = text.find(marker)
+        if idx >= 0:
+            text = text[:idx]
+    # Also cut at any post-completion fake human turn
+    text = re.split(r'\n*(?:Human|User|### ?Human|### ?User)\s*:\s*', text, maxsplit=1)[0]
+    return text.strip()
 
 
 def _parse_tool_call(text):
     """Extract a TOOL_CALL: {...} JSON object or detect FINAL_REPORT:.
-    Returns ('tool', tool_name, args) or ('final', report_text) or ('none', raw_text).
+
+    Returns ('tool', tool_name, args) | ('final', report_text) | ('none', raw_text).
+
+    Calibration test 1 fixes:
+    - Strip chat-template special tokens BEFORE parsing (model emits
+      `<|im_end|>` immediately after the JSON brace, no newline).
+    - FINAL_REPORT match requires the marker at the START of a line (^), so
+      echoed nudge-prompt text containing the substring doesn't false-match.
+    - TOOL_CALL terminator accepts EOL OR EOS — JSON object boundary is
+      detected by balanced-brace counting, not by the trailing newline.
     """
     if not text:
         return ("none", "")
-    # Final report?
-    final_match = re.search(r'FINAL_REPORT:\s*(.*)', text, re.DOTALL)
+    text = _strip_chat_template_tokens(text)
+    if not text:
+        return ("none", "")
+
+    # Final report? Marker MUST be at start of a line (avoids echoed prompt match).
+    final_match = re.search(r'(?:^|\n)\s*FINAL_REPORT:\s*(.*)', text, re.DOTALL)
     if final_match:
-        return ("final", final_match.group(1).strip())
-    # Tool call?
-    tc_match = re.search(r'TOOL_CALL:\s*(\{.*?\})\s*(?:\n|$)', text, re.DOTALL)
-    if tc_match:
-        try:
-            obj = json.loads(tc_match.group(1))
-            tool = obj.get("tool")
-            args = obj.get("args", {})
-            if not tool:
-                return ("none", text)
-            return ("tool", tool, args)
-        except json.JSONDecodeError:
-            # Try a more permissive single-line parse
-            line_match = re.search(r'TOOL_CALL:\s*(\{[^\n]*\})', text)
-            if line_match:
-                try:
-                    obj = json.loads(line_match.group(1))
-                    return ("tool", obj.get("tool"), obj.get("args", {}))
-                except json.JSONDecodeError:
-                    pass
+        report = final_match.group(1).strip()
+        if report:
+            return ("final", report)
+
+    # Tool call: find "TOOL_CALL:" then parse the next balanced JSON object.
+    tc_idx = text.find("TOOL_CALL:")
+    if tc_idx >= 0:
+        # Skip past "TOOL_CALL:" and any whitespace
+        cursor = tc_idx + len("TOOL_CALL:")
+        while cursor < len(text) and text[cursor] in " \t\r\n":
+            cursor += 1
+        if cursor < len(text) and text[cursor] == "{":
+            # Walk balanced braces to find the JSON object end
+            depth = 0
+            in_string = False
+            escape = False
+            end = cursor
+            for i in range(cursor, len(text)):
+                ch = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            json_blob = text[cursor:end]
+            try:
+                obj = json.loads(json_blob)
+                tool = obj.get("tool")
+                args = obj.get("args", {})
+                if tool:
+                    return ("tool", tool, args)
+            except json.JSONDecodeError:
+                pass
     return ("none", text)
 
 
@@ -642,7 +705,17 @@ def api_research():
             break
 
         try:
-            assistant_text = llm_fn(messages, max_tokens=1200, temperature=0.2)
+            # Calibration test 3 finding: qwen_spec_decode_server.py ignores
+            # the OpenAI-compat `stop` parameter, so the 70B keeps generating
+            # fabricated training-data Q&A after every <|im_end|> token (5-10x
+            # token waste per turn). max_tokens=300 caps the bleeding — the
+            # actual TOOL_CALL JSON or FINAL_REPORT line fits in <250 tokens.
+            # The trailing garbage gets stripped client-side by _parse_tool_call.
+            # On the FINAL turn we want the full report so detect "evidence
+            # gathered" by allowing more tokens once we've made >=2 tool calls.
+            this_turn_max = 300 if tool_call_count < 2 else 800
+            assistant_text = llm_fn(messages, max_tokens=this_turn_max, temperature=0.2,
+                                    stop=["<|im_end|>", "<|endoftext|>", "\nHuman:", "\nUser:"])
         except Exception as e:
             trace.append({"iter": iteration, "kind": "error", "detail": f"LLM call failed: {type(e).__name__}: {e}"})
             stop_reason = "error"
@@ -672,10 +745,13 @@ def api_research():
             })
         else:
             # Model emitted neither TOOL_CALL nor FINAL_REPORT — nudge it.
+            # Calibration test 1: avoid putting the literal terminator strings
+            # in the nudge prompt because the model may echo them back and
+            # cause false-match exits. Refer to them obliquely instead.
             trace.append({"iter": iteration, "kind": "nudge"})
             messages.append({
                 "role": "user",
-                "content": "You did not emit a TOOL_CALL or FINAL_REPORT. Either call a tool with TOOL_CALL: {...} or emit FINAL_REPORT: followed by your report. Pick one and continue."
+                "content": "I could not parse a tool invocation or terminator from your last message. Re-emit either a tool call line (the TOOL underscore CALL prefix followed by a single JSON object) or a final-report line (the FINAL underscore REPORT prefix at the start of a line, followed by your report body). Use those exact prefixes with the underscores removed when you actually emit them. Continue."
             })
 
     elapsed = time.time() - started
