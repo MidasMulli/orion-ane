@@ -18,6 +18,7 @@ import urllib.request
 import urllib.error
 import warnings
 from datetime import datetime
+from pathlib import Path
 from flask import Flask, request, jsonify, Response
 
 # ── Suppress noisy loggers ──────────────────────────────────────────────────
@@ -762,6 +763,218 @@ def api_research():
         "tool_calls": tool_call_count,
         "elapsed_s": round(elapsed, 2),
         "stop_reason": stop_reason,
+    })
+
+
+# ── /api/research/queue — Main 30 B2 ───────────────────────────────────────
+#
+# Queue multiple research tasks for sequential overnight processing. The 70B
+# server can only serve one /api/research at a time (single-threaded MLX
+# generation), so the queue runs tasks one after another in a background
+# thread and writes each result to vault/agent_reports/queue/<queue_id>_*.md.
+#
+# Result files use wiki-link convention so they're picked up by the Main 30
+# B1 realtime enricher and become recallable from Subconscious immediately
+# after each task completes.
+#
+# v1: in-memory queue, lost on server restart. Future: persist to disk.
+
+import threading
+import uuid as _uuid
+
+_queue_state: dict = {}  # queue_id → {tasks, completed, status, result_paths}
+_queue_lock = threading.Lock()
+_queue_thread: threading.Thread | None = None
+QUEUE_DIR = "/Users/midas/Desktop/cowork/vault/agent_reports/queue"
+PER_TASK_TIMEOUT_S = 600   # 10 min cap per task
+
+
+def _process_queue(queue_id: str):
+    """Worker thread: process all tasks in the queue sequentially.
+
+    Wraps the body in try/except so any crash updates state to 'failed'
+    rather than leaving it stuck in 'running'.
+    """
+    try:
+        _process_queue_inner(queue_id)
+    except Exception as e:
+        with _queue_lock:
+            state = _queue_state.get(queue_id)
+            if state is not None:
+                state["status"] = "failed"
+                state["error"] = f"{type(e).__name__}: {e}"
+                state["finished_at"] = datetime.now().isoformat()
+        traceback.print_exc()
+
+
+def _process_queue_inner(queue_id: str):
+    """Worker body — sequential task processing with per-task timeout."""
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+    state = _queue_state[queue_id]
+    summary_lines = [
+        f"# Research queue {queue_id}",
+        f"",
+        f"> Started: {state['started_at']}",
+        f"> Tasks: {len(state['tasks'])}",
+        f"",
+    ]
+
+    for i, task in enumerate(state["tasks"]):
+        query = task.get("query", "")
+        if not query:
+            continue
+        with _queue_lock:
+            state["current"] = i
+            state["status"] = "running"
+
+        task_started = time.time()
+        # Build a synthetic /api/research call inline. Reuse the same loop driver.
+        messages = [
+            {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Research goal:\n\n{query}\n\nBegin with your plan, then your first tool call."},
+        ]
+        trace = []
+        final_report = None
+        stop_reason = "cap"
+        tool_call_count = 0
+        max_iters = min(int(task.get("max_iters", 18)), 30)
+        for iteration in range(1, max_iters + 1):
+            if time.time() - task_started > PER_TASK_TIMEOUT_S:
+                stop_reason = "timeout"
+                break
+            try:
+                this_turn_max = 300 if tool_call_count < 2 else 800
+                assistant_text = llm_fn(messages, max_tokens=this_turn_max, temperature=0.2,
+                                        stop=["<|im_end|>", "<|endoftext|>", "\nHuman:", "\nUser:"])
+            except Exception as e:
+                trace.append({"iter": iteration, "kind": "error", "detail": f"{type(e).__name__}: {e}"})
+                stop_reason = "error"
+                break
+            parsed = _parse_tool_call(assistant_text)
+            messages.append({"role": "assistant", "content": assistant_text})
+            trace.append({"iter": iteration, "kind": "assistant", "text": assistant_text})
+            if parsed[0] == "final":
+                final_report = parsed[1]
+                stop_reason = "final"
+                break
+            elif parsed[0] == "tool":
+                _, tool_name, args = parsed
+                tool_call_count += 1
+                try:
+                    result = research_tools.dispatch(tool_name, args, memory_bridge=memory)
+                except Exception as e:
+                    result = f"ERROR: {type(e).__name__}: {e}"
+                if len(result) > RESEARCHER_TOOL_RESULT_CHARS:
+                    result = result[:RESEARCHER_TOOL_RESULT_CHARS] + "\n... (truncated)"
+                trace.append({"iter": iteration, "kind": "tool", "tool": tool_name, "args": args, "result": result})
+                messages.append({"role": "user", "content": f"TOOL_RESULT ({tool_name}):\n{result}\n\nContinue. Call the next tool, or emit FINAL_REPORT: when done."})
+            else:
+                trace.append({"iter": iteration, "kind": "nudge"})
+                messages.append({"role": "user", "content": "I could not parse a tool invocation or terminator. Re-emit either a tool call line or a final-report line."})
+
+        elapsed = time.time() - task_started
+        # Write result file
+        result_path = f"{QUEUE_DIR}/{queue_id}_task_{i+1:02d}.md"
+        report_text = final_report or f"(no final report — stop_reason={stop_reason})"
+        body = [
+            f"# Queue task {i+1}/{len(state['tasks'])}",
+            f"",
+            f"> queue: [[{queue_id}_summary|{queue_id}]]",
+            f"> stop_reason: {stop_reason} | iterations: {iteration} | tool_calls: {tool_call_count} | elapsed: {elapsed:.1f}s",
+            f"",
+            f"## Query",
+            f"",
+            f"```",
+            query,
+            f"```",
+            f"",
+            f"## Final Report",
+            f"",
+            report_text,
+            f"",
+            f"## Tool Trace",
+            f"",
+        ]
+        for t in trace:
+            if t.get("kind") == "tool":
+                body.append(f"- **i{t['iter']} {t['tool']}** `{json.dumps(t.get('args', {}))[:140]}`")
+                body.append(f"  - {(t.get('result') or '')[:240].replace(chr(10), ' | ')}")
+            elif t.get("kind") == "nudge":
+                body.append(f"- i{t['iter']} NUDGE")
+            elif t.get("kind") == "error":
+                body.append(f"- i{t['iter']} ERROR: {t.get('detail', '')[:200]}")
+        try:
+            with open(result_path, "w") as fh:
+                fh.write("\n".join(body) + "\n")
+        except OSError as e:
+            print(f"queue: failed to write {result_path}: {e}")
+        with _queue_lock:
+            state["completed"] = i + 1
+            state["result_paths"].append(result_path)
+        summary_lines.append(f"- Task {i+1}: stop={stop_reason} elapsed={elapsed:.1f}s [[{Path(result_path).stem}]]")
+
+    # Write summary file
+    summary_lines.append("")
+    summary_lines.append(f"> Finished: {datetime.now().isoformat()}")
+    summary_path = f"{QUEUE_DIR}/{queue_id}_summary.md"
+    try:
+        with open(summary_path, "w") as fh:
+            fh.write("\n".join(summary_lines) + "\n")
+    except OSError as e:
+        print(f"queue: failed to write summary {summary_path}: {e}")
+    with _queue_lock:
+        state["status"] = "complete"
+        state["summary_path"] = summary_path
+        state["finished_at"] = datetime.now().isoformat()
+
+
+@app.route("/api/research/queue", methods=["POST"])
+def api_research_queue():
+    """Queue multiple research tasks for sequential processing.
+
+    Body: {"tasks": [{"query": "..."}, {"query": "..."}, ...]}
+    Response: {"queue_id": "...", "task_count": N, "status": "queued"}
+    """
+    global _queue_thread
+    data = request.get_json() or {}
+    tasks = data.get("tasks") or []
+    if not tasks or not isinstance(tasks, list):
+        return jsonify({"error": "tasks must be a non-empty list"}), 400
+
+    queue_id = "q" + datetime.now().strftime("%Y%m%d%H%M%S")
+    state = {
+        "queue_id": queue_id,
+        "tasks": tasks,
+        "completed": 0,
+        "current": 0,
+        "status": "queued",
+        "started_at": datetime.now().isoformat(),
+        "result_paths": [],
+    }
+    with _queue_lock:
+        _queue_state[queue_id] = state
+
+    t = threading.Thread(target=_process_queue, args=(queue_id,), daemon=True)
+    t.start()
+
+    return jsonify({"queue_id": queue_id, "task_count": len(tasks), "status": "queued"})
+
+
+@app.route("/api/research/queue/<queue_id>", methods=["GET"])
+def api_research_queue_status(queue_id):
+    with _queue_lock:
+        state = _queue_state.get(queue_id)
+    if not state:
+        return jsonify({"error": f"unknown queue {queue_id}"}), 404
+    return jsonify({
+        "queue_id": state["queue_id"],
+        "completed": state["completed"],
+        "total": len(state["tasks"]),
+        "status": state["status"],
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "summary_path": state.get("summary_path"),
+        "result_paths": state.get("result_paths", []),
     })
 
 
