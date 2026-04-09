@@ -56,7 +56,12 @@ REALTIME_ENRICHER = Path("/Users/midas/Desktop/cowork/tools/realtime_enricher.py
 PYTHON = "/Users/midas/.mlx-env/bin/python3"
 
 MAINTENANCE_INTERVAL_S = 3600          # hourly
-HEALTH_INTERVAL_S = 30
+# Lowered from 30s → 2s on 2026-04-09 so the visualization can catch
+# in-flight state on the 8B ANE server, whose embed calls finish in ~1
+# second. The /health endpoint is a cheap GET on each upstream and the
+# catch rate at 2s is good enough for both fast (8B embed) and slow (72B
+# generation) workloads.
+HEALTH_INTERVAL_S = 2
 ENRICHER_RESTART_BACKOFF_S = 10
 QUEUE_TAIL_INTERVAL_S = 1.0
 EVENT_LOG_RETENTION_DAYS = 30
