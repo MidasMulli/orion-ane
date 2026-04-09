@@ -1215,6 +1215,37 @@ def api_chat_stream():
                             break
                     mem_ctx = [r["text"] for r in filtered]
                     _last_subconscious = [{"text": r["text"][:200], "score": r["score"]} for r in filtered]
+                    # Main 35 close: stream endpoint also emits per-memory
+                    # daemon events so the viz fires for streaming chats.
+                    # Mirrors the emission block in /api/chat (line ~408+).
+                    _emit_subconscious_event(
+                        "memory_recalled",
+                        query=message[:100],
+                        top_k=len(filtered),
+                        top_score=round(filtered[0].get("score", 0), 3) if filtered else 0,
+                        path="api_chat_stream")
+                    for _i, _r in enumerate(filtered):
+                        _meta = _r.get("metadata", {}) or {}
+                        _src = (_r.get("source") or _r.get("file")
+                                or _meta.get("source") or _meta.get("file") or "")
+                        _basename = _src.rsplit("/", 1)[-1] if _src else ""
+                        _entities = _r.get("entities") or []
+                        _topic_hint = _r.get("query_category", "") or ""
+                        _emit_subconscious_event(
+                            "memory_recalled_item",
+                            index=_i,
+                            of=len(filtered),
+                            score=round(_r.get("score", 0), 3),
+                            file=_basename,
+                            text=_r.get("text", "")[:200],
+                            topic=_topic_hint,
+                            source_role=(_r.get("source_role")
+                                          or _meta.get("source_role", "")) or "",
+                            mem_type=(_r.get("type")
+                                       or _meta.get("type", "")) or "",
+                            entities=_entities[:5] if isinstance(_entities, list) else [],
+                            query=message[:80],
+                        )
             except Exception:
                 pass
 
