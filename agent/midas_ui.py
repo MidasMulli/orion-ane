@@ -80,6 +80,26 @@ _SESSION_BRIEFING_REFRESH_EVERY = 5
 _lock = threading.Lock()
 _idle_queue = None  # Initialized after memory.start()
 
+# Main 35 +5 Tier 1: live ContextTracker singleton.
+# The tracker built in S+1 (multi-topic + brief-query guard, S+4) was
+# only used by smoke tests until now. Wire it into the live chat path
+# so its state reflects real conversations and can be exposed via
+# /api/session/context for the viz to render the active-topic HUD.
+_context_tracker = None
+def _get_context_tracker():
+    global _context_tracker
+    if _context_tracker is None:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, "/Users/midas/Desktop/cowork/orion-ane/agent")
+            from context_tracker import ContextTracker
+            _context_tracker = ContextTracker()
+            _context_tracker.on_session_start()
+        except Exception as e:
+            print(f"context tracker init failed: {e}")
+            _context_tracker = None
+    return _context_tracker
+
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
 def _llm_call(messages, max_tokens, temperature, stop=None):
@@ -98,7 +118,10 @@ def _llm_call(messages, max_tokens, temperature, stop=None):
                 MLX_BASE_URL.rstrip("/") + "/chat/completions",
                 data=payload,
                 headers={"Content-Type": "application/json", "Connection": "close"})
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            # Main 35 +2: bumped 120→900 per real-transcript prefill diagnosis
+            # (m35-72b-real-transcript-wedge.md). Researcher tool calls
+            # under 72B contention need long timeouts.
+            with urllib.request.urlopen(req, timeout=900) as resp:
                 return json.loads(resp.read())
         except Exception as e:
             last_err = e
@@ -130,7 +153,8 @@ def llm_stream(messages, max_tokens=300, temperature=0.7):
         MLX_BASE_URL.rstrip("/") + "/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"})
-    resp = urllib.request.urlopen(req, timeout=120)
+    # Main 35 +2: streaming reads — also bumped to 900s per the same diagnosis.
+    resp = urllib.request.urlopen(req, timeout=900)
 
     for line in resp:
         line = line.decode().strip()
@@ -287,6 +311,7 @@ def api_chat():
     global _history, _last_subconscious, _session_briefing, _session_briefing_built_at_turn
     data = request.get_json()
     message = (data or {}).get("message", "").strip()
+    inject_context = (data or {}).get("inject_context", True)
     if not message:
         return jsonify({"error": "empty message"}), 400
 
@@ -297,6 +322,26 @@ def api_chat():
                 _idle_queue.cancel()
 
             _session["messages_sent"] += 1
+
+            # Main 35 +5 Tier 1: feed message to live context tracker.
+            # The tracker maintains a multi-topic weight vector which the
+            # viz reads via /api/session/context to render the active
+            # topic HUD.
+            try:
+                tracker = _get_context_tracker()
+                if tracker is not None:
+                    tracker.on_message(message, role="human")
+                    # Emit topic state as an event for the viz event log
+                    _emit_subconscious_event(
+                        "context_topic_update",
+                        active_topics=[
+                            {"topic": t, "weight": round(w, 3)}
+                            for t, w in tracker.active_topics
+                        ],
+                        message_count=tracker.message_count,
+                    )
+            except Exception:
+                pass
 
             # 1. Ingest user message
             ingest_result = memory.ingest("user", message)
@@ -315,7 +360,7 @@ def api_chat():
             _last_subconscious = []
             _casual_greetings = {"hey","yo","hi","hello","sup","morning","evening",
                                  "k","ok","thanks","bye","later","night","yo!","hey!"}
-            skip_memory = message.lower().rstrip("!?., ") in _casual_greetings
+            skip_memory = (not inject_context) or (message.lower().rstrip("!?., ") in _casual_greetings)
             try:
                 if not skip_memory:
                     recall_result = memory.recall(message, n_results=15)
@@ -360,6 +405,48 @@ def api_chat():
                             deduped.append(r)
                     filtered = deduped[:8]
                     mem_ctx = [r["text"] for r in filtered]
+                    _emit_subconscious_event(
+                        "memory_recalled",
+                        query=message[:100],
+                        top_k=len(filtered),
+                        top_score=round(filtered[0].get("score", 0), 3) if filtered else 0,
+                        path="api_chat")
+                    # Main 35 +5 Tier 1: emit one per-memory event so the
+                    # viz can animate the retrieval flow as N sequential
+                    # node activations rather than a single top-1 flash.
+                    #
+                    # Rich payload (post Tier 1 fallback fix): include topic,
+                    # source_role, type, text so the viz can do 3-tier
+                    # fallback matching when `file` is empty (legacy memories
+                    # have no source file). Viz tries file → text fuzzy →
+                    # topic cluster pulse in that order.
+                    for _i, _r in enumerate(filtered):
+                        # MemoryBridge.recall flattens the result — fields
+                        # live at the top level, not under 'metadata'.
+                        _meta = _r.get("metadata", {}) or {}  # legacy fallback
+                        _src = (_r.get("source") or _r.get("file")
+                                or _meta.get("source") or _meta.get("file") or "")
+                        _basename = _src.rsplit("/", 1)[-1] if _src else ""
+                        # Derive a "topic" from entities/type since the
+                        # bridge doesn't pass through topic directly. Use
+                        # query_category as a hint if present.
+                        _entities = _r.get("entities") or []
+                        _topic_hint = _r.get("query_category", "") or ""
+                        _emit_subconscious_event(
+                            "memory_recalled_item",
+                            index=_i,
+                            of=len(filtered),
+                            score=round(_r.get("score", 0), 3),
+                            file=_basename,
+                            text=_r.get("text", "")[:200],
+                            topic=_topic_hint,
+                            source_role=(_r.get("source_role")
+                                          or _meta.get("source_role", "")) or "",
+                            mem_type=(_r.get("type")
+                                       or _meta.get("type", "")) or "",
+                            entities=_entities[:5] if isinstance(_entities, list) else [],
+                            query=message[:80],
+                        )
                     _last_subconscious = [
                         {"text": r["text"][:200], "score": r["score"]}
                         for r in filtered
@@ -408,6 +495,68 @@ def api_chat():
                         _session_briefing = None
                 # System slot uses the stable session briefing
                 presentation_briefing = _session_briefing
+
+                # Main 35 +4 T3: prepend a session-open status line on the
+                # FIRST message of this process. The /api/session/context
+                # endpoint already aggregates daemon health, recent activity,
+                # active topic, and overnight queue summaries — surface a
+                # compact version of it so the 72B's response naturally
+                # incorporates "where did we leave off" awareness.
+                if _session.get("messages_sent") == 1:
+                    try:
+                        import urllib.request as _ur
+                        with _ur.urlopen(
+                            "http://127.0.0.1:8450/api/session/context",
+                            timeout=2.5,
+                        ) as r:
+                            ctx = json.loads(r.read())
+                        lines = ["SESSION OPEN — system context for this turn:"]
+                        d = ctx.get("daemon", {}) or {}
+                        if d.get("uptime_h") is not None:
+                            lines.append(
+                                f"  daemon uptime {d['uptime_h']}h, "
+                                f"{d.get('events_emitted','?')} events emitted, "
+                                f"{d.get('components_running','?')}/5 components running"
+                            )
+                        sl = ctx.get("since_last_event", {}) or {}
+                        if sl.get("hours_ago") is not None:
+                            lines.append(
+                                f"  last activity {sl['hours_ago']}h ago — "
+                                f"{sl.get('n_events_24h',0)} events / "
+                                f"{sl.get('loops_fired_24h',0)} maint loops / "
+                                f"{sl.get('memories_recalled_24h',0)} recalls / "
+                                f"{sl.get('enrichments_24h',0)} enrichments in 24h"
+                            )
+                        ac = ctx.get("active_context", {}) or {}
+                        if ac.get("primary_topic_guess"):
+                            lines.append(
+                                f"  current focus appears to be {ac['primary_topic_guess']} "
+                                f"(topic counts: {ac.get('topic_counts_24h',{})})"
+                            )
+                        rq = ctx.get("recent_queues", []) or []
+                        if rq:
+                            queues_str = ", ".join(
+                                f"{q['file']} ({q['modified_h_ago']}h ago)"
+                                for q in rq[:3]
+                            )
+                            lines.append(f"  recent overnight queues: {queues_str}")
+                        mem = ctx.get("memory", {}) or {}
+                        if mem.get("total"):
+                            lines.append(
+                                f"  memory store: {mem['total']} memories")
+                        session_context_block = "\n".join(lines)
+                        # Prepend to existing briefing (if any) or use alone
+                        if presentation_briefing:
+                            presentation_briefing = (
+                                session_context_block
+                                + "\n\n"
+                                + presentation_briefing
+                            )
+                        else:
+                            presentation_briefing = session_context_block
+                    except Exception as _e:
+                        # Non-fatal: session-open context is bonus, not required
+                        pass
                 # Per-query memories ride in the user message (tail) so they
                 # don't invalidate the verifier's prefix KV cache.
                 per_query_block = None
@@ -781,12 +930,36 @@ def api_research():
 
 import threading
 import uuid as _uuid
+# Main 34 S2A: disk-backed queue lifecycle log so pending tasks survive restart.
+import queue_persistence as _qp
+
+
+def _emit_subconscious_event(ev_type: str, **details) -> None:
+    """Main 34 S3 KT4: fire-and-forget POST to subconscious_daemon event bus.
+    Daemon down = no event, never blocks the chat path.
+    """
+    try:
+        import urllib.request as _ur
+        body = json.dumps({
+            "type": ev_type, "component": "midas_ui", "details": details
+        }).encode()
+        req = _ur.Request(
+            "http://127.0.0.1:8452/api/subconscious/emit",
+            data=body, headers={"Content-Type": "application/json"})
+        _ur.urlopen(req, timeout=0.5).read()
+    except Exception:
+        pass
 
 _queue_state: dict = {}  # queue_id → {tasks, completed, status, result_paths}
 _queue_lock = threading.Lock()
 _queue_thread: threading.Thread | None = None
 QUEUE_DIR = "/Users/midas/Desktop/cowork/vault/agent_reports/queue"
-PER_TASK_TIMEOUT_S = 600   # 10 min cap per task
+PER_TASK_TIMEOUT_S = 3600  # Main 35 +4: 600→3600. The Researcher needs
+                            # ~30-50 min on real-content paginated reads of
+                            # 100KB+ JSON files. Same class as the _llm_call
+                            # 120→900 fix from S+2 — original 600s was a
+                            # synthetic-input estimate that doesn't survive
+                            # real prefill latency.
 
 
 def _process_queue(queue_id: str):
@@ -794,6 +967,12 @@ def _process_queue(queue_id: str):
 
     Wraps the body in try/except so any crash updates state to 'failed'
     rather than leaving it stuck in 'running'.
+
+    Main 34 S4 P1: honors `idx_offset` from state (set by recovery so the
+    resumed worker writes lifecycle records and result filenames using
+    the GLOBAL task index from the original enqueue, not its local index
+    over the remaining-tasks slice. Without this, a second crash-resume
+    cycle would scramble the lifecycle log.
     """
     try:
         _process_queue_inner(queue_id)
@@ -804,6 +983,8 @@ def _process_queue(queue_id: str):
                 state["status"] = "failed"
                 state["error"] = f"{type(e).__name__}: {e}"
                 state["finished_at"] = datetime.now().isoformat()
+        try: _qp.log_fail(queue_id, f"{type(e).__name__}: {e}")
+        except Exception: pass
         traceback.print_exc()
 
 
@@ -811,6 +992,8 @@ def _process_queue_inner(queue_id: str):
     """Worker body — sequential task processing with per-task timeout."""
     os.makedirs(QUEUE_DIR, exist_ok=True)
     state = _queue_state[queue_id]
+    # P1: when resumed, log/filename indices use the global numbering.
+    idx_offset = state.get("idx_offset", 0)
     summary_lines = [
         f"# Research queue {queue_id}",
         f"",
@@ -823,9 +1006,12 @@ def _process_queue_inner(queue_id: str):
         query = task.get("query", "")
         if not query:
             continue
+        global_idx = i + idx_offset
         with _queue_lock:
             state["current"] = i
             state["status"] = "running"
+        try: _qp.log_start(queue_id, global_idx)
+        except Exception: pass
 
         task_started = time.time()
         # Build a synthetic /api/research call inline. Reuse the same loop driver.
@@ -873,8 +1059,8 @@ def _process_queue_inner(queue_id: str):
                 messages.append({"role": "user", "content": "I could not parse a tool invocation or terminator. Re-emit either a tool call line or a final-report line."})
 
         elapsed = time.time() - task_started
-        # Write result file
-        result_path = f"{QUEUE_DIR}/{queue_id}_task_{i+1:02d}.md"
+        # Write result file (P1: global index for resume safety)
+        result_path = f"{QUEUE_DIR}/{queue_id}_task_{global_idx+1:02d}.md"
         report_text = final_report or f"(no final report — stop_reason={stop_reason})"
         body = [
             f"# Queue task {i+1}/{len(state['tasks'])}",
@@ -911,6 +1097,8 @@ def _process_queue_inner(queue_id: str):
         with _queue_lock:
             state["completed"] = i + 1
             state["result_paths"].append(result_path)
+        try: _qp.log_task_complete(queue_id, global_idx, result_path)
+        except Exception: pass
         summary_lines.append(f"- Task {i+1}: stop={stop_reason} elapsed={elapsed:.1f}s [[{Path(result_path).stem}]]")
 
     # Write summary file
@@ -926,6 +1114,8 @@ def _process_queue_inner(queue_id: str):
         state["status"] = "complete"
         state["summary_path"] = summary_path
         state["finished_at"] = datetime.now().isoformat()
+    try: _qp.log_complete(queue_id)
+    except Exception: pass
 
 
 @app.route("/api/research/queue", methods=["POST"])
@@ -953,6 +1143,8 @@ def api_research_queue():
     }
     with _queue_lock:
         _queue_state[queue_id] = state
+    try: _qp.log_enqueue(queue_id, tasks)
+    except Exception: pass
 
     t = threading.Thread(target=_process_queue, args=(queue_id,), daemon=True)
     t.start()
@@ -984,6 +1176,7 @@ def api_chat_stream():
     global _history, _last_subconscious
     data = request.get_json()
     message = (data or {}).get("message", "").strip()
+    inject_context = (data or {}).get("inject_context", True)
     if not message:
         return jsonify({"error": "empty message"}), 400
 
@@ -1006,7 +1199,7 @@ def api_chat_stream():
             presentation_briefing = None
             _last_subconscious = []
             try:
-                recall_result = memory.recall(message, n_results=15)
+                recall_result = memory.recall(message, n_results=15) if inject_context else None
                 if recall_result and recall_result.get("results"):
                     filtered = []
                     for r in recall_result["results"]:
@@ -1067,6 +1260,198 @@ def api_chat_stream():
             yield f"data: {sse_data}\n\n"
 
     return app.response_class(generate_sse(), mimetype="text/event-stream")
+
+
+@app.route("/api/subconscious/health")
+def api_subconscious_health():
+    """Main 34 S1C: aggregated subconscious health.
+
+    Foundation for the Phase 3 unified daemon. Surfaces:
+      - memory store size
+      - ane queue depth
+      - unresolved contradiction count (from semantic_supersede records)
+      - upstream server health (72B :8899, 8B ANE :8891)
+    """
+    out = {"ts": time.time()}
+    try:
+        out["memory_stats"] = memory.stats()
+    except Exception as e:
+        out["memory_stats"] = {"error": str(e)}
+    try:
+        import sys as _sys
+        _sys.path.insert(0, "/Users/midas/Desktop/cowork/vault/subconscious")
+        from semantic_supersede import count_unresolved_contradictions
+        out["contradictions_unresolved"] = count_unresolved_contradictions()
+    except Exception as e:
+        out["contradictions_unresolved"] = -1
+        out["contradictions_error"] = str(e)
+    upstream = {}
+    for name, url in (("qwen72b", "http://127.0.0.1:8899/health"),
+                      ("ane8b", "http://127.0.0.1:8891/health")):
+        try:
+            import urllib.request as _u
+            with _u.urlopen(url, timeout=1.0) as r:
+                upstream[name] = {"ok": True, "code": r.status}
+        except Exception as e:
+            upstream[name] = {"ok": False, "error": str(e)[:120]}
+    out["upstream"] = upstream
+    out["session"] = {
+        "messages_sent": _session.get("messages_sent", 0),
+        "memories_recalled": _session.get("memories_recalled", 0),
+        "facts_extracted": _session.get("facts_extracted", 0),
+    }
+    return jsonify(out)
+
+
+@app.route("/api/session/context")
+def api_session_context():
+    """Main 35 +3 T3 — what does the user see when they sit down at Midas?
+
+    Aggregates: time-since-last-session, recent vault activity, daemon
+    event log summary, and a heuristic active-topic guess. Returns a
+    compact JSON the chat surface can render as a brief status line.
+    """
+    import os as _os, glob as _glob, json as _json
+    out = {"ts": time.time()}
+
+    # ── 1. recent event log activity (since 24h) ──
+    log_dir = "/Users/midas/Desktop/cowork/vault/subconscious"
+    cutoff = time.time() - 24 * 3600
+    event_counts = {}
+    n_events = 0
+    n_loops = 0
+    n_recalls = 0
+    n_enrichments = 0
+    last_event_ts = None
+    for fp in sorted(_glob.glob(f"{log_dir}/event_log_*.jsonl")):
+        try:
+            with open(fp) as fh:
+                for line in fh:
+                    try:
+                        rec = _json.loads(line)
+                    except Exception:
+                        continue
+                    ts_str = rec.get("ts") or ""
+                    # ts is ISO8601 with Z; quick parse
+                    try:
+                        from datetime import datetime as _dt
+                        ts_epoch = _dt.fromisoformat(ts_str.rstrip("Z")).timestamp()
+                    except Exception:
+                        continue
+                    if ts_epoch < cutoff:
+                        continue
+                    n_events += 1
+                    last_event_ts = max(last_event_ts or 0, ts_epoch)
+                    t = rec.get("type", "?")
+                    event_counts[t] = event_counts.get(t, 0) + 1
+                    if t == "loop_fired":
+                        n_loops += 1
+                    elif t == "memory_recalled":
+                        n_recalls += 1
+                    elif t == "enrichment_complete":
+                        n_enrichments += 1
+        except OSError:
+            continue
+    hours_since_last = (time.time() - last_event_ts) / 3600.0 if last_event_ts else None
+    out["since_last_event"] = {
+        "hours_ago": round(hours_since_last, 2) if hours_since_last else None,
+        "n_events_24h": n_events,
+        "loops_fired_24h": n_loops,
+        "memories_recalled_24h": n_recalls,
+        "enrichments_24h": n_enrichments,
+        "by_type": event_counts,
+    }
+
+    # ── 2. daemon health ──
+    try:
+        import urllib.request as _u
+        with _u.urlopen("http://127.0.0.1:8452/api/subconscious/status",
+                        timeout=2.0) as r:
+            ds = _json.loads(r.read())
+        out["daemon"] = {
+            "uptime_h": round(ds.get("uptime_s", 0) / 3600, 1),
+            "events_emitted": ds["components"]["event_bus"]["events_emitted"],
+            "components_running": sum(
+                1 for c in ds["components"].values()
+                if c.get("status") == "running"),
+            "upstream": ds["components"]["health_monitor"].get("upstream", {}),
+        }
+    except Exception as e:
+        out["daemon"] = {"error": str(e)[:120]}
+
+    # ── 3. memory store snapshot ──
+    try:
+        ms = memory.stats()
+        out["memory"] = {
+            "total": ms.get("total_memories", 0),
+            "session": ms.get("session"),
+        }
+    except Exception as e:
+        out["memory"] = {"error": str(e)[:120]}
+
+    # ── 4. recent queue activity ──
+    try:
+        from pathlib import Path
+        queue_dir = Path("/Users/midas/Desktop/cowork/vault/agent_reports/queue")
+        recent = sorted(queue_dir.glob("*_summary.md"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:3]
+        out["recent_queues"] = [
+            {"file": p.name, "modified_h_ago":
+             round((time.time() - p.stat().st_mtime) / 3600, 1)}
+            for p in recent
+        ]
+    except Exception as e:
+        out["recent_queues"] = []
+
+    # ── 5. heuristic active topic (from recent event log topic tags) ──
+    # If the daemon has a context tracker hooked up later, swap to that.
+    # For now: count topic mentions in last-24h memory_recalled events.
+    topic_counts = {}
+    try:
+        for fp in sorted(_glob.glob(f"{log_dir}/event_log_*.jsonl"))[-2:]:
+            with open(fp) as fh:
+                for line in fh:
+                    try:
+                        rec = _json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("type") not in ("memory_recalled", "memory_ingested"):
+                        continue
+                    details = rec.get("details") or {}
+                    q = (details.get("query") or "").lower()
+                    for kw, tag in (
+                        ("slc", "hardware"), ("ane", "hardware"),
+                        ("amcc", "hardware"), ("dcs", "hardware"),
+                        ("midas", "midas"), ("/api", "midas"),
+                        ("subconscious", "subconscious"),
+                        ("memory", "subconscious"),
+                        ("paper", "paper"), ("locomo", "paper"),
+                        ("cen", "cen"), ("isda", "cen"),
+                    ):
+                        if kw in q:
+                            topic_counts[tag] = topic_counts.get(tag, 0) + 1
+                            break
+    except Exception:
+        pass
+    primary = max(topic_counts, key=topic_counts.get) if topic_counts else None
+    out["active_context"] = {
+        "primary_topic_guess": primary,
+        "topic_counts_24h": topic_counts,
+    }
+
+    # Main 35 +5 Tier 1: live context tracker state. This is the SOURCE
+    # OF TRUTH for the viz's active-topic HUD — it reflects the actual
+    # multi-topic weight vector after on_message has been called for every
+    # chat message in this midas process. Falls back to the heuristic
+    # primary_topic_guess above if the tracker hasn't seen any messages.
+    try:
+        tracker = _get_context_tracker()
+        if tracker is not None:
+            out["context_tracker"] = tracker.state()
+    except Exception as e:
+        out["context_tracker"] = {"error": str(e)[:120]}
+
+    return jsonify(out)
 
 
 @app.route("/api/queue_depth")
@@ -1783,8 +2168,45 @@ def boot():
     print(f"  http://127.0.0.1:{PORT}")
 
 
+def _resume_incomplete_queues():
+    """Main 34 S2A: on boot, scan disk-backed queue log and re-fire any
+    queues that started but never reached complete. Each recovered queue
+    gets a fresh worker thread for its remaining tasks under the SAME
+    queue_id so its lifecycle log is continuous.
+    """
+    try:
+        pending = _qp.recover_incomplete_queues()
+    except Exception as e:
+        print(f"queue recovery failed: {e}")
+        return
+    if not pending:
+        return
+    print(f"queue recovery: re-firing {len(pending)} incomplete queue(s)")
+    for p in pending:
+        qid = p["queue_id"]
+        remaining = p["remaining_tasks"]
+        completed_so_far = p["completed"]
+        state = {
+            "queue_id": qid,
+            "tasks": remaining,
+            "completed": 0,
+            "current": 0,
+            "status": "queued",
+            "started_at": datetime.now().isoformat(),
+            "result_paths": [],
+            "recovered_from_disk": True,
+            "completed_before_recovery": completed_so_far,
+            "idx_offset": completed_so_far,  # P1: write global indices in lifecycle log
+        }
+        with _queue_lock:
+            _queue_state[qid] = state
+        threading.Thread(target=_process_queue, args=(qid,), daemon=True).start()
+        print(f"  resumed {qid}: {len(remaining)} tasks remaining")
+
+
 if __name__ == "__main__":
     boot()
+    _resume_incomplete_queues()
     # Suppress Flask request logging
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
