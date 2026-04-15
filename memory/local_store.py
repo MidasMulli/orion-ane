@@ -58,12 +58,14 @@ CREATE TABLE IF NOT EXISTS memories (
     file                TEXT,
     source              TEXT,
     relevance_score     REAL,
+    topic               TEXT,
     extra_json          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_type        ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_atom_type   ON memories(atom_type);
 CREATE INDEX IF NOT EXISTS idx_source_role ON memories(source_role);
 CREATE INDEX IF NOT EXISTS idx_superseded  ON memories(superseded_by);
+CREATE INDEX IF NOT EXISTS idx_topic       ON memories(topic);
 """
 
 # Columns we lift to dedicated SQL fields. Anything else from the input
@@ -75,7 +77,7 @@ KNOWN_META_FIELDS = {
     "atom_confidence", "atom_core", "atom_schema_version",
     "atom_migrated_at", "atom_replaces",
     "superseded_by", "superseded_at", "supersedes",
-    "file", "source", "relevance_score",
+    "file", "source", "relevance_score", "topic",
 }
 
 # Reserved at-rest column → metadata-key mapping for SELECT * → meta dict.
@@ -268,6 +270,11 @@ class LocalMemoryStore:
         c = _connect(self.db_path)
         try:
             c.executescript(SCHEMA)
+            # Main 43: migrate existing databases — add topic column if missing
+            cols = {row[1] for row in c.execute("PRAGMA table_info(memories)").fetchall()}
+            if "topic" not in cols:
+                c.execute("ALTER TABLE memories ADD COLUMN topic TEXT")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_topic ON memories(topic)")
         finally:
             c.close()
 
@@ -326,16 +333,49 @@ class LocalMemoryStore:
     def count(self) -> int:
         return len(self._ids)
 
+    # M54 Phase 4: vocabulary-gap query expansion. Known term mismatches
+    # where the index uses one spelling and the user's vocabulary uses
+    # another (Q03 enclave/exclave). When a trigger appears in the query,
+    # we compute cosine against the original + expansions and take the
+    # per-memory max. Keep this list tight — every entry is an extra
+    # embed + matmul. Two-way so either side of the gap works.
+    _QUERY_EXPANSIONS = {
+        "enclave": ["exclave"],
+        "exclave": ["enclave"],
+    }
+
+    @classmethod
+    def _expand_query(cls, query: str) -> list[str]:
+        low = query.lower()
+        variants: list[str] = []
+        for trigger, alts in cls._QUERY_EXPANSIONS.items():
+            if trigger in low:
+                for alt in alts:
+                    variant = query.replace(trigger, alt).replace(
+                        trigger.capitalize(), alt.capitalize()
+                    )
+                    if variant != query and variant not in variants:
+                        variants.append(variant)
+        return variants
+
     def recall(self, query: str, n_results: int = 5, type_filter: str = None,
-               recency_weight: float = 0.25, include_superseded: bool = False) -> list[dict]:
+               recency_weight: float = 0.25, include_superseded: bool = False,
+               possessive_intent: bool = False) -> list[dict]:
         if not self._ids:
             return []
-        q_emb = self.emb_model.encode(
-            [query], normalize_embeddings=True, show_progress_bar=False
-        )[0].astype(np.float32)
+        # M54 Phase 4: compute cosine against original query + any
+        # vocabulary-gap expansions, then take per-memory max.
+        queries = [query] + self._expand_query(query)
+        q_embs = self.emb_model.encode(
+            queries, normalize_embeddings=True, show_progress_bar=False
+        ).astype(np.float32)
 
         with self._lock:
-            sims = self._emb_matrix @ q_emb  # (N,)
+            if q_embs.shape[0] == 1:
+                sims = self._emb_matrix @ q_embs[0]  # (N,)
+            else:
+                # (N, D) @ (D, K) -> (N, K) -> max over K -> (N,)
+                sims = (self._emb_matrix @ q_embs.T).max(axis=1)
 
         # Pull a wide candidate pool to allow type/superseded filtering + rerank
         fetch_n = min(max(n_results * 5, 30), len(self._ids))
@@ -375,6 +415,31 @@ class LocalMemoryStore:
             meta = self._row_to_meta(r)
             if meta.get("source_role") == "canonical":
                 score *= 1.30
+            # Provenance authority: model-generated content scores lower
+            # than human-provided or vault-sourced content. Prevents
+            # self-reinforcing hallucination loops where the system
+            # retrieves its own prior fabrications as authoritative.
+            sr = r["source_role"] or ""
+            if sr == "assistant":
+                score *= 0.50
+            # M53 P4 / M54 Phase 2.2: possessive-intent filter.
+            # When query asks "our X" / "we have Y", research-sourced
+            # memories describing external projects score lower so they
+            # don't dominate recall (Orion → "our LoRA pipeline").
+            # M54: tightened from 0.30 to 0.05 because 109 Orion memories
+            # at 0.30 still outranked the canonical denial. With a 20x
+            # downweight, only the highest-cosine research memory has any
+            # chance of surfacing in top-K when canonical denials exist.
+            if possessive_intent and sr == "research":
+                score *= 0.05
+            # M54 Phase 4: when the query asks "what have we researched",
+            # prior user questions on the same topic crowd out actual
+            # answers (Q03 enclave — top 4 recalls were the user's own
+            # past questions at sim 0.747, buried the research content).
+            # Downweight user-role memories on possessive knowledge
+            # queries; they are question-shaped, not answer-shaped.
+            if possessive_intent and sr == "user":
+                score *= 0.30
             recalled.append({
                 "text": r["text"],
                 "similarity": similarity,
@@ -387,9 +452,32 @@ class LocalMemoryStore:
         recalled.sort(key=lambda x: x["score"], reverse=True)
         return recalled[:n_results]
 
+    # M54 Phase 4: ingest-time noise filter. The 8B extractor sometimes
+    # returns "no facts to extract from this text" or similar meta
+    # commentary instead of actual facts. These got stored as memories
+    # with high recall similarity to question-shaped queries (Q18 bug —
+    # 44 noise entries dominated recall on "what was the t14-t15 finding").
+    _INGEST_NOISE_PATTERNS = (
+        "no facts to extract",
+        "no extracted facts",
+        "appears to be a question",
+        "appears to be a request",
+        "starting point for research",
+        "however, if we consider",
+        "fact: [type] fact sentence",
+    )
+
+    @classmethod
+    def _is_extraction_noise(cls, text: str) -> bool:
+        low = text.lower().strip()
+        return any(p in low for p in cls._INGEST_NOISE_PATTERNS)
+
     def store(self, fact: dict) -> Optional[str]:
         text = fact.get("text", "")
         if not text:
+            return None
+        # M54 Phase 4: drop extraction noise before embedding/storage
+        if self._is_extraction_noise(text):
             return None
         emb = self.emb_model.encode(
             [text], normalize_embeddings=True, show_progress_bar=False
@@ -402,6 +490,10 @@ class LocalMemoryStore:
         return fid
 
     def store_batch(self, facts: list[dict]) -> list[str]:
+        if not facts:
+            return []
+        # M54 Phase 4: drop extraction noise before any embedding work
+        facts = [f for f in facts if not self._is_extraction_noise(f.get("text", ""))]
         if not facts:
             return []
         texts = [f["text"] for f in facts]
@@ -475,6 +567,34 @@ class LocalMemoryStore:
             })
         return out
 
+    # ── topic classifier (Main 43 Phase 1) ──
+    _topic_patterns = None
+
+    @classmethod
+    def _classify_topic(cls, text: str) -> str | None:
+        """Classify text into a topic using context_tracker keyword clusters.
+        Returns the best-matching topic or None."""
+        if cls._topic_patterns is None:
+            import re as _re
+            try:
+                from context_tracker import DEFAULT_TOPIC_KEYWORDS
+            except ImportError:
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                                  "..", "agent"))
+                from context_tracker import DEFAULT_TOPIC_KEYWORDS
+            cls._topic_patterns = {
+                t: _re.compile(r"\b(" + "|".join(_re.escape(k) for k in kws) + r")\b",
+                               _re.IGNORECASE)
+                for t, kws in DEFAULT_TOPIC_KEYWORDS.items()
+            }
+        scores = {}
+        for topic, patt in cls._topic_patterns.items():
+            hits = len(patt.findall(text))
+            if hits:
+                scores[topic] = hits
+        return max(scores, key=scores.get) if scores else None
+
     # ── internal write paths ──
     def _fact_to_metadata(self, fact: dict) -> dict:
         meta = {
@@ -485,9 +605,15 @@ class LocalMemoryStore:
             "quantities": json.dumps(fact.get("quantities", [])),
             "session": fact.get("session", "unknown"),
         }
+        # Main 43 Phase 1: auto-classify topic if not provided
+        if "topic" not in fact:
+            text = fact.get("text", "")
+            topic = self._classify_topic(text)
+            if topic:
+                fact["topic"] = topic
         for k in ("atom_type", "atom_tense", "atom_core", "atom_confidence",
                   "atom_schema_version", "atom_migrated_at", "atom_replaces",
-                  "file", "source"):
+                  "file", "source", "topic"):
             if k in fact:
                 meta[k] = fact[k]
         if "atom_entities" in fact:
@@ -621,3 +747,124 @@ class LocalMemoryStore:
             return False
         sims = embedding @ self._emb_matrix.T
         return float(sims.max()) >= self.DEDUP_THRESHOLD
+
+    # ─────────────────────────────────────────────────────────────────
+    # Main 61: reactive framing-stale triggers
+    #
+    # flag_framing_stale: event-driven supersession for assistant/user
+    # echoes whose numeric framing no longer matches the registry /
+    # canonical truth. NEVER mutates canonical rows — those get logged
+    # to maintenance_log.jsonl with action=flag_for_review for human
+    # review (per vault/CLAUDE.md "DO NOT auto-supersede canonical").
+    #
+    # update_canonical_in_place: the narrow escape hatch for obvious
+    # two-number rewrites derivable from the registry. Preserves id,
+    # changes text + timestamp, logs to maintenance_log.jsonl.
+    # ─────────────────────────────────────────────────────────────────
+    _MAINTENANCE_LOG_PATH = "/Users/midas/Desktop/cowork/data/maintenance_log.jsonl"
+
+    def _append_maintenance_log(self, entry: dict) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._MAINTENANCE_LOG_PATH), exist_ok=True)
+            entry.setdefault("ts", datetime.utcnow().isoformat())
+            with open(self._MAINTENANCE_LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # non-critical, never break the hot path on log write
+
+    def flag_framing_stale(self, memory_id: str, reason: str,
+                           triggered_by: str) -> None:
+        """Event-driven flag for framing-stale memories.
+
+        If the row is role=canonical: DO NOT mutate, only log
+        action=flag_for_review. Otherwise mark superseded_by=triggered_by
+        and superseded_at=utcnow(). Idempotent: a row already marked
+        superseded is a no-op except for the log line.
+        """
+        with self._lock:
+            c = _connect(self.db_path)
+            try:
+                row = c.execute(
+                    "SELECT id, source_role, superseded_by FROM memories WHERE id=?",
+                    (memory_id,),
+                ).fetchone()
+                if row is None:
+                    self._append_maintenance_log({
+                        "memory_id": memory_id, "action": "flag_missing",
+                        "reason": reason, "triggered_by": triggered_by,
+                        "role": None,
+                    })
+                    return
+                role = row["source_role"] or ""
+                already_flagged = bool(row["superseded_by"])
+                if role == "canonical":
+                    # Log-only path; canonical memories are human-review only.
+                    self._append_maintenance_log({
+                        "memory_id": memory_id, "action": "flag_for_review",
+                        "reason": reason, "triggered_by": triggered_by,
+                        "role": role,
+                    })
+                    return
+                if already_flagged:
+                    # Idempotent: re-log but don't mutate
+                    self._append_maintenance_log({
+                        "memory_id": memory_id, "action": "auto_supersede_dup",
+                        "reason": reason, "triggered_by": triggered_by,
+                        "role": role,
+                    })
+                    return
+                ts = datetime.utcnow().isoformat()
+                c.execute(
+                    "UPDATE memories SET superseded_by=?, superseded_at=? "
+                    "WHERE id=?",
+                    (triggered_by, ts, memory_id),
+                )
+            finally:
+                c.close()
+            # Rebuild in-memory index so superseded row drops out of recall
+            self._load_index()
+        self._append_maintenance_log({
+            "memory_id": memory_id, "action": "auto_supersede",
+            "reason": reason, "triggered_by": triggered_by,
+            "role": role,
+        })
+
+    def update_canonical_in_place(self, memory_id: str, new_text: str,
+                                  reason: str) -> bool:
+        """Narrow-safe two-number rewrite for canonical rows.
+
+        Verifies source_role='canonical'. Updates text + timestamp only,
+        preserves id and embedding (caller must re-embed separately if
+        semantic drift is large — intended for numeric value swaps).
+        Returns True on success. Idempotent: no-op if text already matches.
+        """
+        with self._lock:
+            c = _connect(self.db_path)
+            try:
+                row = c.execute(
+                    "SELECT id, source_role, text FROM memories WHERE id=?",
+                    (memory_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                if (row["source_role"] or "") != "canonical":
+                    return False
+                old_text = row["text"] or ""
+                if old_text == new_text:
+                    return True  # idempotent no-op
+                ts = datetime.utcnow().isoformat()
+                c.execute(
+                    "UPDATE memories SET text=?, timestamp=? WHERE id=?",
+                    (new_text, ts, memory_id),
+                )
+            finally:
+                c.close()
+        self._append_maintenance_log({
+            "memory_id": memory_id, "action": "canonical_in_place_update",
+            "reason": reason,
+            "old_text_prefix": old_text[:120],
+            "new_text_prefix": new_text[:120],
+            "triggered_by": "update_canonical_in_place",
+            "role": "canonical",
+        })
+        return True

@@ -47,9 +47,38 @@ class FactExtractor:
     """
 
     # ─── Quantities ───
+    # Main 38 P3: extended to cover technical measurements the project
+    # actually generates. The original pattern was banking-only
+    # (currency / percent / day-month-year) and did not match tok/s,
+    # GB/s, ms, TFLOPS, etc. This left quantities_json empty on every
+    # user-stated technical measurement and blocked the auto-populating
+    # measurement registry (P3) because there was nothing to promote.
+    #
+    # Order matters: more-specific patterns first (compound units like
+    # tok/s before plain ms) so the regex engine doesn't split them.
     QUANTITY_PATTERN = re.compile(
+        # Currency
         r'(?:USD|GBP|EUR|\$|£|€)\s*[\d,]+(?:\.\d+)?(?:\s*(?:million|billion|M|B|K))?\b'
+        # Throughput (tok/s, tokens/s, tps)
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:tok/s|tokens/s|tok-s|tps)\b'
+        # Bandwidth (GB/s, MB/s, KB/s)
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:GB/s|MB/s|KB/s|Gbps|Mbps)\b'
+        # Compute (TFLOPS, GFLOPS)
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:T|G|M)?FLOPS?\b'
+        # Capacity (GB, MB, KB, TB) — must be after bandwidth to avoid
+        # matching the GB in GB/s
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:TB|GB|MB|KB|kB)\b'
+        # Latency (ms, us, µs, ns, microseconds)
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:ms/tok|ms|µs|us|ns|microseconds)\b'
+        # Speedup (e.g., 3.2x, 10.0x)
+        r'|\b[\d,]+(?:\.\d+)?\s*x(?:\s+(?:faster|speedup|slower))?\b'
+        # Temperature (for thermal telemetry)
+        r'|\b[\d,]+(?:\.\d+)?\s*(?:°C|degC|C|K)\b'
+        # Counts with units (dispatches, ways, opcodes, layers, cores)
+        r'|\b[\d,]+\s*(?:dispatch(?:es)?|ways?|opcodes?|layers?|cores?|banks?|lines?)\b'
+        # Percentage
         r'|[\d,]+(?:\.\d+)?%'
+        # Time duration (days/months/years)
         r'|\b\d+\s+(?:days?|months?|years?|business days?)\b',
         re.IGNORECASE
     )
@@ -59,8 +88,12 @@ class FactExtractor:
     # with Track 1 patterns covering models, hardware, dispatch counts, and the
     # Subconscious memory architecture vocabulary the project actually uses.
     ENTITY_PATTERNS = [
-        # Model families
+        # Model families (full names)
         re.compile(r'\b(Llama[- ]?3(?:\.\d)?[- ]?(?:1|3|8|70)B(?:[- ]Instruct)?|GPT[- ]?2|Qwen[- ]?\d(?:\.\d)?[- ]?\d{1,3}(?:\.\d)?B?(?:[- ]Instruct)?|MiniLM[- ]?L\d+[- ]v\d+|Neuron(?:[- ]?\d+M)?)\b', re.IGNORECASE),
+        # Standalone model shorthand (user shorthand: "8B runs at...", "72B cold",
+        # "1B drafter"). Added Main 38 P3 because FactExtractor was missing these
+        # and the auto-populating registry got no entity match on user statements.
+        re.compile(r'\b(?<![A-Za-z])(1B|3B|8B|13B|27B|70B|72B)(?![A-Za-z])', re.IGNORECASE),
         # Quantization levels
         re.compile(r'\b(Q[3-8]|FP16|BF16|INT[48])\b'),
         # Hardware accelerators / silicon
@@ -260,17 +293,25 @@ class FactExtractor:
     def _classify_type(self, sentence: str) -> str:
         return self.classify_type(sentence)
 
+    # Model shorthand whitelist: 2-char model names the short-entity filter
+    # below would otherwise drop. Main 38 P3 added this so "8B", "1B", "3B"
+    # don't get filtered as stray credit-rating letters.
+    _MODEL_SHORTHAND_RE = re.compile(r'^\d+B$', re.IGNORECASE)
+
     def _extract_entities(self, sentence: str) -> list[str]:
         """Extract named entities using domain-specific patterns."""
         entities = set()
         for pattern in self.ENTITY_PATTERNS:
             for match in pattern.finditer(sentence):
                 entity = match.group(1).strip()
-                # Skip single-char or very short matches
+                # Skip single-char matches
                 if len(entity) < 2:
                     continue
-                # Skip standalone credit ratings that are just letters (A, B, etc.)
-                if len(entity) <= 2 and not entity.endswith(('+', '-')):
+                # Skip standalone short matches unless they are credit-rating
+                # style (A+, B-) or model shorthand (8B, 1B, 3B, ...).
+                if (len(entity) <= 2
+                        and not entity.endswith(('+', '-'))
+                        and not self._MODEL_SHORTHAND_RE.match(entity)):
                     continue
                 # Skip common English words that aren't entities
                 if entity in self.ENTITY_STOPWORDS:
@@ -687,10 +728,25 @@ class VaultWriter:
     v3: Clean entity filenames, wikilinks, AND contradiction tracking.
     When a fact is superseded, the vault file gets updated with a
     strikethrough on the old entry and a note pointing to the new one.
+
+    Main 38 Layer 2: entity files are now rebuilt from the LocalMemoryStore
+    on every write instead of appended. This closes the write-path
+    contamination loop where assistant-sourced fabrications accumulated
+    in entities/<name>.md unchecked and re-surfaced via vault_read. The
+    entity file becomes a deterministic function of the store state
+    (filtered by superseded_by IS NULL AND source_role != 'assistant'),
+    eliminating the dual-source-of-truth problem that produced the Main
+    37 SLC/d3Force/8B-tmp fabrication loop. General/decisions/tasks/
+    preferences files remain append-only for now since they are not
+    entity-keyed and not the contamination source.
     """
 
-    def __init__(self, vault_path: str):
+    def __init__(self, vault_path: str, db_path: str = None):
         self.vault_path = vault_path
+        self.db_path = db_path or os.path.join(
+            os.path.dirname(vault_path), "orion-ane", "memory",
+            "chromadb_live", "memory_local.db"
+        )
         self._ensure_structure()
 
     def _ensure_structure(self):
@@ -707,7 +763,13 @@ class VaultWriter:
             os.makedirs(os.path.join(self.vault_path, folder), exist_ok=True)
 
     def write_fact(self, fact: dict, category: str = None):
-        """Write a fact to the appropriate vault location."""
+        """Write a fact to the appropriate vault location.
+
+        Main 38 Layer 2: entity files (memory/entities/<name>.md) are
+        rebuilt from the store instead of appended. Type-based files
+        (general/decisions/preferences/tasks) remain append-only since
+        they are not entity-keyed and not the contamination source.
+        """
         fact_type = category or fact.get("type", "general")
         entities = fact.get("entities", [])
         text = fact["text"]
@@ -716,7 +778,7 @@ class VaultWriter:
         # Add wikilinks to other entities in the text
         display_text = self._add_wikilinks(text, entities)
 
-        # Route to appropriate file
+        # Route to appropriate type file (append-only, legacy)
         if fact_type == "decision":
             self._append_to_file("memory/decisions/decisions.md", display_text, timestamp)
         elif fact_type == "preference":
@@ -726,15 +788,118 @@ class VaultWriter:
         else:
             self._append_to_file("memory/facts/general.md", display_text, timestamp)
 
-        # Always write to entity pages too (regardless of type)
+        # Main 38 Layer 2: rebuild each affected entity file from store.
+        # The new fact has already been committed to LocalMemoryStore by
+        # the daemon's _process_loop before write_fact is called, so the
+        # store query below will see it and include it in the rebuild
+        # (subject to the supersession and source_role filters).
         if entities:
             for entity in entities:
-                safe_name = self._entity_filename(entity)
-                if safe_name:
-                    self._append_to_file(
-                        f"memory/entities/{safe_name}.md",
-                        display_text, timestamp, entity_name=entity
-                    )
+                try:
+                    self._rebuild_entity_from_store(entity)
+                except Exception as e:
+                    # Don't let a rebuild failure break the ingest loop.
+                    # Fall back to legacy append so the fact is not lost.
+                    log.warning("rebuild entity failed for %r: %s; falling "
+                                "back to append", entity, e)
+                    safe_name = self._entity_filename(entity)
+                    if safe_name:
+                        self._append_to_file(
+                            f"memory/entities/{safe_name}.md",
+                            display_text, timestamp, entity_name=entity)
+
+    def _rebuild_entity_from_store(self, entity_name: str) -> None:
+        """Rebuild memory/entities/<entity>.md from the store.
+
+        Queries LocalMemoryStore for all active (not superseded) facts
+        associated with `entity_name`, filtering out source_role='assistant'
+        to prevent the self-poisoning loop documented in Main 38 P1
+        (vault/agent_reports/main38_p1_writepath_contamination.md).
+        Preserves the existing file's '# Title' header line so wikilinks
+        stay stable. Writes atomically via tmp+rename.
+
+        The rebuild is idempotent: calling it twice in a row is a no-op
+        on the second call because the file already matches the store.
+        """
+        import sqlite3
+        import json as _json
+
+        safe_name = self._entity_filename(entity_name)
+        if not safe_name:
+            return
+        filepath = os.path.join(
+            self.vault_path, "memory", "entities", f"{safe_name}.md")
+
+        if not os.path.exists(self.db_path):
+            # Store file not available; skip rebuild (should not happen
+            # in a correctly configured daemon).
+            return
+
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.cursor()
+            # Match on either entities_json or atom_entities_json so we
+            # catch facts from both the legacy and newer extraction paths.
+            entity_pattern = f'%"{entity_name}"%'
+            cur.execute(
+                "SELECT id, text, source_role, timestamp "
+                "FROM memories "
+                "WHERE superseded_by IS NULL "
+                "AND (source_role IS NULL OR source_role != 'assistant') "
+                "AND text IS NOT NULL "
+                "AND (entities_json LIKE ? OR atom_entities_json LIKE ?) "
+                "ORDER BY timestamp ASC",
+                (entity_pattern, entity_pattern))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        # Preserve existing header (everything before the first '- [' line)
+        header = f"# {entity_name}\n"
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as fh:
+                    old_content = fh.read()
+                old_lines = old_content.split("\n")
+                for i, l in enumerate(old_lines):
+                    if l.startswith("- ["):
+                        header = "\n".join(old_lines[:i]).rstrip() + "\n"
+                        break
+                else:
+                    header = old_content.rstrip() + "\n"
+            except Exception:
+                pass
+
+        # Build new content: header + deduped fact lines
+        lines = [header.rstrip(), ""]
+        seen = set()
+        for row in rows:
+            ts = row["timestamp"] or ""
+            date = ts[:10] if len(ts) >= 10 else "????-??-??"
+            text = row["text"]
+            key = (date, text[:300])
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- [{date}] {text}")
+        new_content = "\n".join(lines) + "\n"
+
+        # Skip write if content is byte-identical to current
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as fh:
+                    if fh.read() == new_content:
+                        return
+            except Exception:
+                pass
+
+        # Atomic write
+        tmp = filepath + ".tmp"
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(tmp, "w") as fh:
+            fh.write(new_content)
+        os.replace(tmp, filepath)
 
     def write_session_summary(self, session_id: str, facts: list[dict]):
         """Write a session summary note."""
@@ -883,7 +1048,11 @@ class MemoryDaemon:
         self.store = LocalMemoryStore(db_path, embedding_model=embedding_model)
 
         # Tier 2: Vault organization
-        self.vault = VaultWriter(vault_path)
+        # Main 38 Layer 2: pass the actual store db file so VaultWriter
+        # can rebuild entity markdown files from the same SQLite source
+        # that the daemon uses (no path drift between store and vault).
+        sqlite_file = os.path.join(db_path, "memory_local.db")
+        self.vault = VaultWriter(vault_path, db_path=sqlite_file)
 
         # Tier 3: Enricher (optional, always-on background intelligence)
         self._enable_enricher = enable_enricher
@@ -896,6 +1065,9 @@ class MemoryDaemon:
         self._thread = None
         self._session_facts = []
         self._stats = {"ingested": 0, "extracted": 0, "stored": 0, "deduped": 0}
+        # Main 45: grounding gate discard tracking
+        self._discard_lock = threading.Lock()
+        self._last_discarded = []  # cleared on each ingest() call
 
     def start(self):
         """Start the background memory processing daemon."""
@@ -1009,9 +1181,18 @@ class MemoryDaemon:
         if self._session_facts:
             self.vault.write_session_summary(self.session_id, self._session_facts)
 
-    def ingest(self, role: str, text: str):
-        """Feed a conversation turn to the daemon. Non-blocking."""
-        self._queue.put({"role": role, "text": text})
+    def ingest(self, role: str, text: str, recall_context: list = None):
+        """Feed a conversation turn to the daemon. Non-blocking.
+
+        recall_context: list of recalled memory text strings for this turn.
+        Used by the grounding gate (Main 45) to discard assistant-sourced
+        facts whose entities cannot be traced to recalled context.
+        """
+        # Main 45: clear discard tracking for this ingest cycle
+        with self._discard_lock:
+            self._last_discarded = []
+        self._queue.put({"role": role, "text": text,
+                         "recall_context": recall_context})
         self._stats["ingested"] += 1
 
     def recall(self, query: str, n_results: int = 5) -> list[dict]:
@@ -1039,6 +1220,54 @@ class MemoryDaemon:
             "superseded": self._stats.get("superseded", 0),
             "ane_queue_depth": getattr(self, '_ane_queue_depth', 0),
         }
+
+    @property
+    def last_discarded_ungrounded(self) -> list:
+        """Return facts discarded by the grounding gate since last ingest()."""
+        with self._discard_lock:
+            return list(self._last_discarded)
+
+    # ── Main 45: Extraction Grounding Gate ────────────────────────────
+    # Assistant-sourced facts must be traceable to recalled context.
+    # If a fact's entities don't appear in recall_context, it came from
+    # the model's training distribution — discard it.
+
+    def _is_fact_grounded(self, fact: dict, recall_texts: list) -> bool:
+        """Check if a fact's key entities appear in the recalled context.
+
+        Returns True if at least one entity from the fact appears in any
+        recall text (case-insensitive substring match). Facts with no
+        extracted entities are ungrounded by definition.
+        """
+        entities = fact.get("entities", [])
+        if not entities:
+            return False
+        # Build a single lowercase corpus from all recall texts
+        corpus = " ".join(recall_texts).lower()
+        for ent in entities:
+            if isinstance(ent, str) and ent.lower() in corpus:
+                return True
+        return False
+
+    def _gate_assistant_facts(self, facts: list, recall_context: list) -> tuple:
+        """Apply grounding gate to assistant-sourced facts.
+
+        Returns (grounded_facts, discarded_facts).
+        """
+        if not recall_context:
+            # No recall context = nothing to ground against = discard all
+            return [], facts
+        recall_texts = [t for t in recall_context if isinstance(t, str)]
+        if not recall_texts:
+            return [], facts
+        grounded = []
+        discarded = []
+        for fact in facts:
+            if self._is_fact_grounded(fact, recall_texts):
+                grounded.append(fact)
+            else:
+                discarded.append(fact)
+        return grounded, discarded
 
     def _extract_via_ane(self, text: str, role: str) -> Optional[list]:
         """Extract facts via 8B Q8 on ANE (HTTP to extraction server).
@@ -1118,21 +1347,219 @@ class MemoryDaemon:
         except Exception:
             return None
 
-    def _ane_extract_worker(self, text, role):
+    def _ane_extract_worker(self, text, role, recall_context=None):
         """Background worker for 8B ANE extraction. Non-blocking."""
+        _stored_count = 0
         try:
             ane_facts = self._extract_via_ane(text, role)
             if ane_facts:
+                # Main 45: grounding gate for assistant-sourced facts
+                if role == "assistant" and recall_context is not None:
+                    grounded, discarded = self._gate_assistant_facts(
+                        ane_facts, recall_context)
+                    if discarded:
+                        self._stats.setdefault("discarded_ungrounded", 0)
+                        self._stats["discarded_ungrounded"] += len(discarded)
+                        with self._discard_lock:
+                            self._last_discarded.extend([
+                                {"text": f["text"],
+                                 "entities": f.get("entities", []),
+                                 "source": "ane_8b"}
+                                for f in discarded])
+                    ane_facts = grounded
+
                 for fact in ane_facts:
                     fact["session"] = self.session_id
                     fact_id = self.store.store(fact)
                     if fact_id:
                         self._stats["stored"] += 1
                         self._stats["extracted"] += 1
+                        _stored_count += 1
+
+            # Main 46: Reactive maintenance — run dedup + contradiction
+            # immediately after extraction, not on hourly cron.
+            if _stored_count > 0:
+                self._reactive_maintenance(_stored_count)
         except Exception:
             pass
         finally:
             self._ane_queue_depth = max(0, getattr(self, '_ane_queue_depth', 0) - 1)
+
+    def run_maintenance_if_idle(self):
+        """Run dedup + contradiction scan during GPU decode window.
+
+        Main 50: called from the GPU decode path to use idle CPU time.
+        Main 55 P6: gate on CPU-maintenance reentrancy only. The old
+        _ane_queue_depth check was wrong — maintenance runs on CPU, does
+        not contend with ANE 8B extraction, and the call site is already
+        inside the GPU-decoding window (which is precisely when CPU is
+        otherwise idle). Skipping on ANE busy was leaving the CPU idle
+        during the exact window we wanted to exploit.
+        Returns True if maintenance ran, False if already running.
+        """
+        if getattr(self, '_maintenance_running', False):
+            return False  # already running from another call
+        self._maintenance_running = True
+        try:
+            self._reactive_maintenance(0)
+            return True
+        finally:
+            self._maintenance_running = False
+
+    def _reactive_maintenance(self, facts_stored):
+        """Run dedup + contradiction scan + framing-stale check.
+
+        Main 46: catches duplicates and contradictions within seconds
+        of ingestion instead of waiting up to 59 minutes for the hourly
+        launchd cron. Only these two loops are event-driven; the other
+        five (decay, vault_sync, etc.) stay hourly.
+
+        Main 61: added framing-stale check — for each recently-stored
+        fact, find memories in the cosine band 0.60–0.85 that carry a
+        DIFFERENT numeric value for the same entity/measurement_type.
+        Piggybacks on the existing numpy matmul from store.recall();
+        flag_framing_stale() is log-only for canonical rows.
+        """
+        try:
+            import sys as _s
+            _s.path.insert(0, "/Users/midas/Desktop/cowork/vault/subconscious")
+            from maintenance import consolidate_duplicates, resolve_contradictions
+            _t0 = time.time()
+            col = self.store.collection
+            dedup = consolidate_duplicates(col)
+            contra = resolve_contradictions(col)
+            _dedup_end = time.time()
+            # Main 61 framing-stale pass (bounded scope: last N session facts)
+            framing = self._framing_stale_pass()
+            _ms = int((_dedup_end - _t0) * 1000)
+            _framing_ms = int((time.time() - _dedup_end) * 1000)
+            if dedup or contra or framing:
+                print(f"[daemon] reactive maintenance: dedup={dedup}, "
+                      f"contra={contra}, framing={framing}, "
+                      f"{_ms}ms (+{_framing_ms}ms framing)", flush=True)
+            self._stats.setdefault("reactive_maintenance_runs", 0)
+            self._stats["reactive_maintenance_runs"] += 1
+            self._stats["last_reactive_maintenance_ms"] = _ms
+            self._stats["last_framing_stale_ms"] = _framing_ms
+        except Exception as _e:
+            import traceback as _tb
+            print(f"[daemon] reactive maintenance error: {_e}", flush=True)
+            _tb.print_exc()
+
+    # Main 61: framing-stale detection on the ingestion hot path.
+    # Cosine band 0.60–0.85 (above contradict floor, below dedup); pair
+    # with entity overlap AND numeric divergence to avoid false positives.
+    _FRAMING_LOW = 0.60
+    _FRAMING_HIGH = 0.85
+    _FRAMING_MAX_RECENT = 8  # last N facts examined per reactive call
+    _NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+
+    def _framing_stale_pass(self) -> int:
+        """Scan last _FRAMING_MAX_RECENT session facts for framing-stale
+        older memories. Returns count of memories flagged/logged."""
+        if not hasattr(self, "_session_facts") or not self._session_facts:
+            return 0
+        if not hasattr(self.store, "flag_framing_stale"):
+            return 0  # older store without Main 61 hooks — skip silently
+
+        recent = self._session_facts[-self._FRAMING_MAX_RECENT:]
+        flagged = 0
+        # Pre-resolve the index matrix once for the whole pass.
+        store = self.store
+        emb_matrix = getattr(store, "_emb_matrix", None)
+        ids = getattr(store, "_ids", None)
+        if emb_matrix is None or ids is None or len(ids) == 0:
+            return 0
+
+        for fact in recent:
+            ftext = fact.get("text", "")
+            if not ftext:
+                continue
+            fents = set(e.lower() for e in (fact.get("entities") or []) if e)
+            if not fents:
+                continue
+            fnums = [float(n) for n in self._NUM_RE.findall(ftext)
+                     if self._safe_float(n) is not None]
+            if not fnums:
+                continue  # only flag if new fact carries numeric framing
+
+            try:
+                emb = store.emb_model.encode(
+                    [ftext], normalize_embeddings=True,
+                    show_progress_bar=False)[0]
+                emb = np.asarray(emb, dtype=np.float32)
+            except Exception:
+                continue
+            sims = emb_matrix @ emb  # reuse existing matmul path
+            # Candidate band only
+            cand_idx = np.where(
+                (sims >= self._FRAMING_LOW) & (sims < self._FRAMING_HIGH)
+            )[0]
+            if cand_idx.size == 0:
+                continue
+            # Fetch candidate rows in one SELECT
+            cand_ids = [ids[i] for i in cand_idx]
+            try:
+                got = store.collection.get(
+                    ids=cand_ids,
+                    include=["documents", "metadatas"],
+                )
+            except Exception:
+                continue
+            for mid, mtext, meta in zip(
+                got.get("ids", []), got.get("documents", []),
+                got.get("metadatas", []),
+            ):
+                role = (meta or {}).get("source_role", "")
+                # Entity overlap check
+                raw_ents = (meta or {}).get("entities", "[]")
+                try:
+                    ments = json.loads(raw_ents) if isinstance(raw_ents, str) \
+                        else raw_ents
+                except Exception:
+                    ments = []
+                ment_set = set(str(e).lower() for e in (ments or []))
+                if not (fents & ment_set):
+                    continue
+                # Numeric divergence: any numeric in old text that
+                # differs from every numeric in new fact by > 5% relative
+                mnums = [self._safe_float(n)
+                         for n in self._NUM_RE.findall(mtext or "")]
+                mnums = [n for n in mnums if n is not None]
+                if not mnums:
+                    continue
+                diverges = False
+                for mn in mnums:
+                    for fn in fnums:
+                        if abs(fn) < 1e-9:
+                            if abs(mn) > 1e-6:
+                                diverges = True
+                                break
+                        elif abs(mn - fn) / max(abs(fn), 1e-9) > 0.05:
+                            diverges = True
+                            break
+                    if diverges:
+                        break
+                if not diverges:
+                    continue
+                reason = (f"framing-stale: old={mnums[:3]} new={fnums[:3]} "
+                          f"entities={sorted(fents & ment_set)[:3]}")
+                try:
+                    store.flag_framing_stale(
+                        memory_id=mid, reason=reason,
+                        triggered_by=f"extraction:{fact.get('session', 'unknown')}",
+                    )
+                    flagged += 1
+                except Exception:
+                    continue
+        return flagged
+
+    @staticmethod
+    def _safe_float(s):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
 
     def _process_loop(self):
         """Background processing loop — CPU extraction immediate, 8B async."""
@@ -1147,6 +1574,8 @@ class MemoryDaemon:
             if item is None:
                 break
 
+            recall_context = item.get("recall_context")
+
             # IMMEDIATE: CPU FactExtractor (ms, never blocks)
             facts = self.extractor.extract(item["text"], role=item["role"])
 
@@ -1157,12 +1586,27 @@ class MemoryDaemon:
                                 ["currently running", "server is up", "uptime",
                                  "as of right now", "at this moment"])]
 
+            # Main 45: grounding gate for assistant-sourced facts
+            if item["role"] == "assistant" and recall_context is not None:
+                grounded, discarded = self._gate_assistant_facts(
+                    facts, recall_context)
+                if discarded:
+                    self._stats.setdefault("discarded_ungrounded", 0)
+                    self._stats["discarded_ungrounded"] += len(discarded)
+                    with self._discard_lock:
+                        self._last_discarded.extend([
+                            {"text": f["text"],
+                             "entities": f.get("entities", []),
+                             "source": "cpu"}
+                            for f in discarded])
+                facts = grounded
+
             # ASYNC: 8B ANE extraction in separate thread (doesn't block queue)
             if self._ane_queue_depth < 10:  # Backpressure: cap at 10 pending
                 self._ane_queue_depth += 1
                 t = threading.Thread(
                     target=self._ane_extract_worker,
-                    args=(item["text"], item["role"]),
+                    args=(item["text"], item["role"], recall_context),
                     daemon=True)
                 t.start()
 
@@ -1203,6 +1647,12 @@ class MemoryDaemon:
                     self._stats["deduped"] += 1
 
             self._stats["extracted"] += len(facts)
+
+            # Main 46: reactive maintenance after CPU extraction too
+            _cpu_stored = sum(1 for f in facts
+                              if self.store.count() > 0)  # rough proxy
+            if len(facts) > 0:
+                self._reactive_maintenance(len(facts))
 
 
 # ── CLI Demo ─────────────────────────────────────────────────────
